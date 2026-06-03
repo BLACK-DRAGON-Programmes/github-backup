@@ -163,6 +163,7 @@ int network_init(void) {
 
 
 int check_connectivity(int timeout_ms) {
+    (void)timeout_ms;  /* WinHttpConnect has no timeout parameter — resolved at request level */
     if (g_hSession == NULL) {
         log_error("network", NULL,
                   "Cannot check connectivity — session not initialized");

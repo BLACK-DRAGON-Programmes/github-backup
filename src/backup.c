@@ -36,6 +36,33 @@
  * FILE VERIFICATION
  * ================================================================ */
 
+/**
+ * Validate that a constructed file path (dir + filename) will fit
+ * within MAX_URL_LEN. Prevents silent path truncation by snprintf
+ * when backup_dir is very long.
+ *
+ * @param dir_len    Length of the directory portion (excluding null)
+ * @param name_len   Length of the filename portion (excluding null)
+ * @param repo       Repo name (for error logging)
+ * @return 0 if path fits, -1 if it would overflow
+ */
+static int validate_path_length(size_t dir_len, size_t name_len,
+                                const char *repo) {
+    if (dir_len + name_len >= MAX_URL_LEN) {
+        char detail[MAX_URL_LEN];
+        snprintf(detail, sizeof(detail),
+                 "Path too long: backup_dir (%zu) + repo name (%zu) "
+                 "exceeds MAX_URL_LEN (%d) — shorten BACKUP_DIR in .env",
+                 dir_len, name_len, MAX_URL_LEN);
+        log_error("backup", repo, detail);
+        toast_error("Path Too Long",
+                    "BACKUP_DIR + repo name exceeds maximum path length");
+        return -1;
+    }
+    return 0;
+}
+
+
 int verify_downloaded_file(const char *file_path) {
     if (file_path == NULL || file_path[0] == '\0') {
         return -1;
@@ -192,12 +219,31 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     log_event(LOG_INFO, "backup", repo, "OK", detail);
 
     /*
-     * Step 2: Construct file paths for the atomic write pattern.
-     * temp_path: where the download goes first (.zip.tmp)
-     * final_path: where the verified download ends up (.zip)
+     * Step 2: Validate and construct file paths for the atomic write
+     * pattern. temp_path: where the download goes first (.zip.tmp).
+     * final_path: where the verified download ends up (.zip).
+     *
+     * Fail-fast: if backup_dir + repo + suffix exceeds MAX_URL_LEN,
+     * the path would be silently truncated by snprintf — the download
+     * would go to the wrong location. Catch this early with a loud
+     * error (Coding Standard #34: Fail-Fast on Startup).
      */
+    size_t dir_len = strlen(config->backup_dir);
+    size_t repo_len = strlen(repo);
+
+    if (validate_path_length(dir_len, repo_len + strlen(TEMP_FILE_SUFFIX),
+                              repo) != 0) {
+        return BACKUP_UNKNOWN_ERROR;
+    }
+
     snprintf(temp_path, sizeof(temp_path), "%s%s%s",
              config->backup_dir, repo, TEMP_FILE_SUFFIX);
+
+    if (validate_path_length(dir_len, repo_len + strlen(FINAL_FILE_SUFFIX),
+                              repo) != 0) {
+        return BACKUP_UNKNOWN_ERROR;
+    }
+
     snprintf(final_path, sizeof(final_path), "%s%s%s",
              config->backup_dir, repo, FINAL_FILE_SUFFIX);
 

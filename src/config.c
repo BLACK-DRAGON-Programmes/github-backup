@@ -79,11 +79,43 @@ void apply_defaults(backup_config *config) {
 /* ─── Public Functions ──────────────────────────────────────── */
 
 void build_env_path(const char *backup_dir, char *path_out) {
+    /*
+     * Validate: backup_dir + ".env" must fit in MAX_URL_LEN.
+     * If backup_dir is near the limit, the path would be silently
+     * truncated by snprintf — the .env file would not be found.
+     * Fail-fast with a loud error (Coding Standard #34).
+     */
+    size_t dir_len = strlen(backup_dir);
+    if (dir_len + 4 >= MAX_URL_LEN) {  /* 4 = strlen(".env") */
+        char detail[MAX_URL_LEN];
+        snprintf(detail, sizeof(detail),
+                 "BACKUP_DIR too long (%zu chars) — cannot build .env path "
+                 "(max %d chars). Shorten BACKUP_DIR in .env.",
+                 dir_len, MAX_URL_LEN - 5);
+        log_error("config", NULL, detail);
+        path_out[0] = '\0';  /* Return empty path — caller will fail-safe */
+        return;
+    }
     snprintf(path_out, MAX_URL_LEN, "%s.env", backup_dir);
 }
 
 
 void build_log_path(const char *backup_dir, char *path_out) {
+    /*
+     * Validate: backup_dir + "backup.log" must fit in MAX_URL_LEN.
+     * Same fail-fast logic as build_env_path.
+     */
+    size_t dir_len = strlen(backup_dir);
+    if (dir_len + 10 >= MAX_URL_LEN) {  /* 10 = strlen("backup.log") */
+        char detail[MAX_URL_LEN];
+        snprintf(detail, sizeof(detail),
+                 "BACKUP_DIR too long (%zu chars) — cannot build log path "
+                 "(max %d chars). Shorten BACKUP_DIR in .env.",
+                 dir_len, MAX_URL_LEN - 11);
+        log_error("config", NULL, detail);
+        path_out[0] = '\0';
+        return;
+    }
     snprintf(path_out, MAX_URL_LEN, "%sbackup.log", backup_dir);
 }
 

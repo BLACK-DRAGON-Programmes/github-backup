@@ -19,11 +19,14 @@
 
 #ifdef _WIN32
 
+#include <stdio.h>
 #include <windows.h>
 #include <ole2.h>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
+#endif
 
 /*
  * KNOWN LIMITATION: The Windows toast notification requires WinRT
