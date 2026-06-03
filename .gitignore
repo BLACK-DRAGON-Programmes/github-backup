@@ -19,3 +19,6 @@
 # === OS files ===
 Thumbs.db
 Desktop.ini
+
+# === Extras ===
+update.ps1

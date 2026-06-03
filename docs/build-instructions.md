@@ -17,8 +17,8 @@
 | Shell32 | Windows 10 built-in | Toast notification COM interfaces |
 | Ole32 | Windows 10 built-in | COM initialization |
 | RuntimeObject | Windows 10 built-in | Windows Runtime activation |
+| ShlObj | Windows Vista built-in | `SHCreateDirectoryExA` for recursive directory creation |
 | ShLwApi | Windows 10 built-in | Shell utility functions (path manipulation) |
-| ShlWApi / ShlObj | Windows Vista built-in | `SHCreateDirectoryExA` for recursive directory creation |
 
 ## Source Files
 
@@ -43,14 +43,20 @@ All source files are in `src/`:
 
 ## Compilation
 
-### Compile Command
+### Compile Command (PowerShell)
 
-```bash
-gcc -Wall -Wextra -O2 -static -o backup.exe \
-    src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c \
-    -I src/ \
-    -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE \
+```powershell
+gcc -Wall -Wextra -O2 -static -o backup.exe `
+    src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c `
+    -I src/ `
+    -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE `
     -lwinhttp -lkernel32 -lshell32 -lole32 -lruntimeobject -lshlwapi
+```
+
+**One-liner (paste-safe for any terminal):**
+
+```
+gcc -Wall -Wextra -O2 -static -o backup.exe src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c -I src/ -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE -lwinhttp -lkernel32 -lshell32 -lole32 -lruntimeobject -lshlwapi
 ```
 
 > **Note:** `-D_WIN32_WINNT=0x0600` is required for `SHCreateDirectoryExA` to be
@@ -75,7 +81,8 @@ gcc -Wall -Wextra -O2 -static -o backup.exe \
 | `-lshell32` | Link Shell32 for toast notification COM interfaces and `SHCreateDirectoryExA`. |
 | `-lole32` | Link Ole32 for COM initialization (CoInitializeEx). |
 | `-lruntimeobject` | Link RuntimeObject for Windows Runtime activation. |
-| `-lshlwapi` | Link ShLwApi for shell utility functions. |
+| `-lshlwapi` | Link ShLwApi for shell utility functions (PathCanonicalize, etc.). |
+| `-lshlobj` | Link ShlObj for directory creation functions. |
 
 ### Static Build (Default)
 
@@ -83,14 +90,46 @@ The compile command above already includes `-static` for a fully static
 executable. Remove `-static` if you prefer dynamic linking (smaller binary,
 but requires MinGW runtime DLLs at runtime).
 
-```bash
+```powershell
 # Dynamic build (smaller binary, requires MinGW DLLs)
-gcc -Wall -Wextra -O2 -o backup.exe \
-    src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c \
-    -I src/ \
-    -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE \
+gcc -Wall -Wextra -O2 -o backup.exe `
+    src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c `
+    -I src/ `
+    -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE `
     -lwinhttp -lkernel32 -lshell32 -lole32 -lruntimeobject -lshlwapi
 ```
+
+## Updating Source Files
+
+### Using update.ps1 (recommended)
+
+`update.ps1` is included in the project root. It downloads the latest source from the private PROGRAMMING repo and overwrites your local files. Your `.env`, compiled binaries, zip archives, and logs are never touched.
+
+```powershell
+cd D:\BACKUP\ghb
+.\update.ps1
+```
+
+The script reads the token from your `.env` file automatically (supports both `GITHUB_TOKEN=` and `GITHUB_BASE_URL=` formats). No manual token configuration needed.
+
+### Manual update (without the script)
+
+If you prefer to update manually, download the PROGRAMMING repo archive and extract the `ghb/` subdirectory:
+
+```powershell
+# Read token from .env, download via GitHub API, extract ghb/ contents
+$token = (Get-Content .env | Where-Object { $_ -match "^GITHUB_TOKEN=" }) -split "=",2 | Select-Object -Last 1
+Invoke-WebRequest -Uri "https://api.github.com/repos/agent-workspace-1157/PROGRAMMING/zipball/main" `
+    -Headers @{ "Authorization" = "Bearer $token" } `
+    -OutFile "$env:TEMP\ghb-update.zip" -UseBasicParsing
+Expand-Archive "$env:TEMP\ghb-update.zip" "$env:TEMP\ghb-update" -Force
+$extracted = (Get-ChildItem "$env:TEMP\ghb-update" -Directory).FullName
+Copy-Item "$extracted\ghb\*" . -Recurse -Force -Exclude .env,*.exe,*.zip,*.log,update.ps1
+Remove-Item "$env:TEMP\ghb-update.zip","$env:TEMP\ghb-update" -Recurse -Force
+```
+
+> **Important:** The token goes in the `Authorization` header, not in the URL.
+> PowerShell's `Invoke-WebRequest` silently strips credentials from URLs.
 
 ## Testing
 
@@ -98,14 +137,14 @@ gcc -Wall -Wextra -O2 -o backup.exe \
 
 Three test files exist in `tests/`. Each tests a specific module:
 
-```bash
-# Config module tests (11 tests: token/owner extraction, repo parsing, path construction)
+```powershell
+# Config module tests
 gcc -Wall -Wextra -o test_config.exe tests/test_config.c src/config.c src/logger.c src/notify.c -I src/ -D_WIN32_WINNT=0x0600 -lshell32 -lole32 -lruntimeobject
 
-# Network module tests (15 tests: JSON string/int parsing, buffer truncation, null safety)
+# Network module tests
 gcc -Wall -Wextra -o test_network.exe tests/test_network.c src/network.c src/logger.c src/notify.c -I src/ -D_WIN32_WINNT=0x0600 -lwinhttp -lshell32 -lole32 -lruntimeobject
 
-# Backup module tests (11 tests: file verification, atomic write, temp cleanup)
+# Backup module tests
 gcc -Wall -Wextra -o test_backup.exe tests/test_backup.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c -I src/ -D_WIN32_WINNT=0x0600 -lwinhttp -lshell32 -lole32 -lruntimeobject
 ```
 
