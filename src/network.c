@@ -31,7 +31,9 @@
 #include <windows.h>
 #include <winhttp.h>
 
-#pragma comment(lib, "winhttp.lib")
+#ifndef ERROR_INTERNET_TIMEOUT
+#define ERROR_INTERNET_TIMEOUT 12002
+#endif
 
 /**
  * Persistent WinHTTP session handle. Opened once at startup,
@@ -166,8 +168,6 @@ int check_connectivity(int timeout_ms) {
                   "Cannot check connectivity — session not initialized");
         return 0;
     }
-
-    DWORD timeout = to_winhttp_timeout(timeout_ms);
 
     /*
      * Connect to github.com. This verifies DNS resolution and TCP

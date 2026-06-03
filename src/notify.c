@@ -20,16 +20,24 @@
 #ifdef _WIN32
 
 #include <windows.h>
-#include <shobjidl.h>
-#include <wrl/client.h>
-#include <wrl/implements.h>
+#include <ole2.h>
 
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
-#pragma comment(lib, "runtimeobject.lib")
 
-using namespace Microsoft::WRL;
-using namespace Microsoft::WRL::Wrappers;
+/*
+ * KNOWN LIMITATION: The Windows toast notification requires WinRT
+ * activation (RoGetActivationFactory) and C++ WRL headers (<wrl/client.h>,
+ * <wrl/implements.h>). These headers use C++ features (namespaces,
+ * templates, classes) and cannot be included in a C compilation unit.
+ *
+ * The C intermediate version uses COM initialization and XML template
+ * building as placeholders. Toast events are fully logged via the logger
+ * module (dual output), so no information is lost.
+ *
+ * The full toast display will be implemented during the NASM translation
+ * phase, where the raw COM vtable dispatch avoids C++ header dependencies.
+ */
 
 
 /** Track whether COM was successfully initialized. */
@@ -50,6 +58,7 @@ static int g_com_initialized = 0;
  */
 static void build_toast_xml(char *xml_out, int xml_len,
                             const char *title, const char *message) {
+    (void)xml_len;  /* XML length passed for future buffer guard */
     snprintf(xml_out, (size_t)xml_len,
         "<toast>"
         "<visual>"
