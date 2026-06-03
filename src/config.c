@@ -18,6 +18,16 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <sys/stat.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <shlwapi.h>
+#else
+#include <unistd.h>
+#include <limits.h>
+#endif
 
 
 /* ─── String Helpers ──────────────────────────────────────── */
@@ -55,12 +65,117 @@ static int is_comment_or_blank(const char *line) {
 }
 
 
-/* ─── Defaults ──────────────────────────────────────────────── */
+/* ─── Exe Directory ──────────────────────────────────────── */
+
+/**
+ * Get the directory containing the running executable.
+ * On Windows: uses GetModuleFileNameA() and strips the filename.
+ * On Linux: reads /proc/self/exe symlink.
+ * The output always includes a trailing path separator.
+ * Returns an empty string if the path cannot be determined.
+ */
+void get_exe_dir(char *dir_out, size_t dir_size) {
+    dir_out[0] = '\0';
+
+    #ifdef _WIN32
+    char exe_path[MAX_URL_LEN];
+    DWORD len = GetModuleFileNameA(NULL, exe_path, MAX_URL_LEN);
+    if (len == 0 || len >= MAX_URL_LEN) {
+        return;
+    }
+    /* Strip the filename: find last backslash or forward slash */
+    char *last_sep = strrchr(exe_path, '\\');
+    if (last_sep == NULL) {
+        last_sep = strrchr(exe_path, '/');
+    }
+    if (last_sep != NULL) {
+        size_t dir_len = (size_t)(last_sep - exe_path) + 1; /* include trailing sep */
+        if (dir_len >= dir_size) {
+            dir_len = dir_size - 1;
+        }
+        strncpy(dir_out, exe_path, dir_len);
+        dir_out[dir_len] = '\0';
+    }
+    #else
+    char exe_path[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exe_path, PATH_MAX - 1);
+    if (len <= 0) {
+        return;
+    }
+    exe_path[len] = '\0';
+    char *last_sep = strrchr(exe_path, '/');
+    if (last_sep != NULL) {
+        size_t dir_len = (size_t)(last_sep - exe_path) + 1;
+        if (dir_len >= dir_size) {
+            dir_len = dir_size - 1;
+        }
+        strncpy(dir_out, exe_path, dir_len);
+        dir_out[dir_len] = '\0';
+    }
+    #endif
+}
+
+
+/* ─── Directory Creation ──────────────────────────────────── */
+
+/**
+ * Ensure a directory exists, creating it (and any parent directories)
+ * if needed. Returns 0 on success (or already exists), -1 on failure.
+ *
+ * On Windows: uses SHCreateDirectoryExA which creates the full path
+ * recursively in a single call.
+ * On Linux: walks the path components and calls mkdir() for each.
+ */
+int ensure_dir_exists(const char *path) {
+    if (path[0] == '\0') {
+        return -1;
+    }
+
+    #ifdef _WIN32
+    int result = SHCreateDirectoryExA(NULL, path, NULL);
+    if (result == ERROR_SUCCESS || result == ERROR_ALREADY_EXISTS) {
+        return 0;
+    }
+    return -1;
+    #else
+    char tmp[MAX_URL_LEN];
+    strncpy(tmp, path, MAX_URL_LEN - 1);
+    tmp[MAX_URL_LEN - 1] = '\0';
+
+    /* Remove trailing slash if present */
+    size_t len = strlen(tmp);
+    if (len > 0 && (tmp[len - 1] == '/')) {
+        tmp[len - 1] = '\0';
+    }
+
+    /* Create each path component */
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            char saved = *p;
+            *p = '\0';
+            if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+                return -1;
+            }
+            *p = saved;
+        }
+    }
+    if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+        return -1;
+    }
+    return 0;
+    #endif
+}
+
+
+/* ─── Defaults ──────────────────────────────────────────── */
 
 void apply_defaults(backup_config *config) {
-    if (config->backup_dir[0] == '\0') {
-        strncpy(config->backup_dir, "D:\\BACKUP\\", MAX_URL_LEN - 1);
-    }
+    /*
+     * If BACKUP_DIR is not set in .env, do NOT hardcode a default.
+     * The caller (main.c) sets backup_dir to the exe's directory before
+     * calling parse_env_file, so if BACKUP_DIR is missing from .env the
+     * exe's own directory is used as the output directory.
+     */
     if (config->cycle_interval == 0) {
         config->cycle_interval = 3600;
     }
@@ -76,27 +191,25 @@ void apply_defaults(backup_config *config) {
 }
 
 
-/* ─── Public Functions ──────────────────────────────────────── */
+/* ─── Path Builders ──────────────────────────────────────── */
 
-void build_env_path(const char *backup_dir, char *path_out) {
+void build_env_path(const char *exe_dir, char *path_out) {
     /*
-     * Validate: backup_dir + ".env" must fit in MAX_URL_LEN.
-     * If backup_dir is near the limit, the path would be silently
-     * truncated by snprintf — the .env file would not be found.
-     * Fail-fast with a loud error (Coding Standard #34).
+     * Build .env path from the executable's directory.
+     * The .env file sits next to the exe — not in BACKUP_DIR.
      */
-    size_t dir_len = strlen(backup_dir);
+    size_t dir_len = strlen(exe_dir);
     if (dir_len + 4 >= MAX_URL_LEN) {  /* 4 = strlen(".env") */
         char detail[MAX_URL_LEN];
         snprintf(detail, sizeof(detail),
-                 "BACKUP_DIR too long (%zu chars) — cannot build .env path "
-                 "(max %d chars). Shorten BACKUP_DIR in .env.",
+                 "Exe directory path too long (%zu chars) — cannot build .env path "
+                 "(max %d chars). Move the executable to a shorter path.",
                  dir_len, MAX_URL_LEN - 5);
         log_error("config", NULL, detail);
-        path_out[0] = '\0';  /* Return empty path — caller will fail-safe */
+        path_out[0] = '\0';
         return;
     }
-    snprintf(path_out, MAX_URL_LEN, "%s.env", backup_dir);
+    snprintf(path_out, MAX_URL_LEN, "%s.env", exe_dir);
 }
 
 
@@ -119,6 +232,8 @@ void build_log_path(const char *backup_dir, char *path_out) {
     snprintf(path_out, MAX_URL_LEN, "%sbackup.log", backup_dir);
 }
 
+
+/* ─── URL Parsing ──────────────────────────────────────── */
 
 int extract_token(const char *base_url, char *token_out) {
     /*
@@ -181,6 +296,8 @@ int extract_owner(const char *base_url, char *owner_out) {
 }
 
 
+/* ─── Repo List Parsing ─────────────────────────────────── */
+
 int parse_repos(const char *repos_raw,
                 char repos[][MAX_REPO_NAME_LEN], int *count) {
     *count = 0;
@@ -217,6 +334,8 @@ int parse_repos(const char *repos_raw,
 }
 
 
+/* ─── Validation ─────────────────────────────────────────── */
+
 int validate_config(const backup_config *config) {
     if (config->base_url[0] == '\0') {
         log_error("config", NULL, "GITHUB_BASE_URL is missing from .env");
@@ -242,17 +361,22 @@ int validate_config(const backup_config *config) {
 }
 
 
+/* ─── Main Parser ────────────────────────────────────────── */
+
 int parse_env_file(backup_config *config) {
     char env_path[MAX_URL_LEN];
 
     /*
-     * If backup_dir is not yet set (first call), use the default.
-     * After parsing, backup_dir will be populated from .env or default.
+     * The .env file lives in the exe's directory, next to the executable.
+     * config->backup_dir is used as a transport for exe_dir: the caller
+     * (main.c) sets backup_dir = exe_dir before the first call, and
+     * restore_exe_dir() after each cycle re-read.
      */
     if (config->backup_dir[0] != '\0') {
         build_env_path(config->backup_dir, env_path);
     } else {
-        build_env_path("D:\\BACKUP\\", env_path);
+        log_error("config", NULL, "Cannot locate .env — exe directory not set");
+        return -1;
     }
 
     FILE *fp = fopen(env_path, "r");
@@ -261,6 +385,11 @@ int parse_env_file(backup_config *config) {
         toast_error("Config Error", "Cannot open .env file");
         return -1;
     }
+
+    /* Preserve exe_dir across the memset — save it, restore after */
+    char exe_dir[MAX_URL_LEN];
+    strncpy(exe_dir, config->backup_dir, MAX_URL_LEN - 1);
+    exe_dir[MAX_URL_LEN - 1] = '\0';
 
     /* Zero out the struct */
     memset(config, 0, sizeof(backup_config));

@@ -15,17 +15,17 @@
  *   - network: checks internet connectivity
  *   - backup:  runs the per-repo backup cycle
  *
- * Startup sequence (per spec Section 3-4):
+ * Startup sequence:
  *   1. Initialize COM (notify_init)
- *   2. Load config with defaults (apply_defaults runs first)
- *   3. Build .env path, verify it exists
- *   4. Parse .env, validate mandatory fields
- *   5. Initialize log file
+ *   2. Determine where the exe lives (get_exe_dir)
+ *   3. Find .env next to the exe, parse it
+ *   4. Create BACKUP_DIR if it doesn't exist
+ *   5. Initialize log file in BACKUP_DIR
  *   6. Initialize network session
  *   7. Fire "service started" toast
  *   8. Enter main loop
  *
- * Main loop (per spec Section 3-5):
+ * Main loop:
  *   1. Check internet connectivity
  *   2. If no internet: toast + log + sleep + loop
  *   3. Fire "cycle start" toast
@@ -58,9 +58,6 @@
 
 /* ================================================================
  * SLEEP HELPER
- *
- * Platform-independent sleep function. Uses Windows Sleep() on
- * Windows and POSIX sleep() on other platforms.
  * ================================================================ */
 
 /**
@@ -83,11 +80,6 @@ static void sleep_seconds(int seconds) {
 
 /* ================================================================
  * STARTUP VALIDATION
- *
- * Validates that the .env file exists and contains the mandatory
- * fields before entering the main loop. Per Coding Standard #34
- * (Fail-Fast on Startup): if anything is wrong, the program exits
- * immediately with a specific error message.
  * ================================================================ */
 
 /**
@@ -100,8 +92,7 @@ static void sleep_seconds(int seconds) {
 static int validate_env_exists(const char *env_path) {
     FILE *fp = fopen(env_path, "r");
     if (fp == NULL) {
-        log_error("startup", NULL, "Config file not found");
-        toast_error("Config Error", "Config file (.env) not found — exiting");
+        fprintf(stderr, "Error: Config file (.env) not found at: %s\n", env_path);
         return -1;
     }
     fclose(fp);
@@ -118,9 +109,10 @@ static int validate_env_exists(const char *env_path) {
  * that checks connectivity, runs backup cycles, and sleeps between
  * cycles. It only returns if the program is being shut down.
  *
- * @param config  The initial configuration (used for first cycle)
+ * @param config     The initial configuration (used for first cycle)
+ * @param exe_dir    The exe's directory (used to re-find .env each cycle)
  */
-static void run_main_loop(backup_config *config) {
+static void run_main_loop(backup_config *config, const char *exe_dir) {
     for (;;) {
         /*
          * Step 1: Check internet connectivity.
@@ -139,23 +131,35 @@ static void run_main_loop(backup_config *config) {
          * Step 2: Fresh config read every cycle.
          * The spec says .env is re-read on every execution cycle so
          * that changes take effect without restarting the program.
+         *
+         * Set backup_dir to exe_dir so parse_env_file can find .env
+         * next to the exe. After parsing, backup_dir will hold the
+         * BACKUP_DIR value from .env (or remain exe_dir if not set).
          */
         backup_config cycle_config;
         memset(&cycle_config, 0, sizeof(backup_config));
-        strncpy(cycle_config.backup_dir, config->backup_dir,
-                MAX_URL_LEN - 1);
+        strncpy(cycle_config.backup_dir, exe_dir, MAX_URL_LEN - 1);
+        cycle_config.backup_dir[MAX_URL_LEN - 1] = '\0';
 
         if (parse_env_file(&cycle_config) != 0) {
-            /*
-             * Config parse failed. This could mean the .env was
-             * modified and is now corrupt. Log the error, wait
-             * for the next cycle (don't exit — the previous
-             * .env content may be restored).
-             */
             log_error("main", NULL,
                       "Failed to parse .env — skipping this cycle");
             toast_error("Config Error",
                         "Failed to parse .env — skipping this cycle");
+            sleep_seconds(config->cycle_interval);
+            continue;
+        }
+
+        /*
+         * Ensure BACKUP_DIR exists before starting the cycle.
+         * It may have been deleted between cycles, or the user may
+         * have changed BACKUP_DIR in .env to a new path.
+         */
+        if (ensure_dir_exists(cycle_config.backup_dir) != 0) {
+            log_error("main", NULL,
+                      "Cannot create or access BACKUP_DIR — skipping this cycle");
+            toast_error("Directory Error",
+                        "Cannot create BACKUP_DIR — check permissions");
             sleep_seconds(config->cycle_interval);
             continue;
         }
@@ -172,7 +176,6 @@ static void run_main_loop(backup_config *config) {
 
         /*
          * Step 4: Run the backup cycle.
-         * This iterates over all repos and attempts backup for each.
          */
         int succeeded = 0;
         int failed = 0;
@@ -182,8 +185,6 @@ static void run_main_loop(backup_config *config) {
 
         /*
          * Step 5: Fire cycle-complete toast with summary.
-         * If the cycle was aborted (disk full), include that in
-         * the toast message.
          */
         char complete_msg[MAX_URL_LEN];
         if (cycle_result != 0) {
@@ -224,65 +225,76 @@ int main(void) {
      * Must happen first so that startup errors can fire toasts.
      */
     if (notify_init() != 0) {
-        /*
-         * COM init failed. The program can still run — toasts will
-         * be silently skipped, but logging still works.
-         */
         fprintf(stderr, "Warning: Toast notifications unavailable\n");
     }
 
     /*
-     * Step 2: Load initial config with defaults.
-     * This gives us the backup_dir to find the .env file.
+     * Step 2: Determine where this executable lives.
+     * Everything else follows from this — .env is found next to the exe,
+     * BACKUP_DIR is relative to the exe (or set explicitly in .env).
+     */
+    char exe_dir[MAX_URL_LEN];
+    get_exe_dir(exe_dir, sizeof(exe_dir));
+
+    if (exe_dir[0] == '\0') {
+        fprintf(stderr, "Error: Cannot determine executable directory\n");
+        notify_cleanup();
+        return 1;
+    }
+
+    fprintf(stderr, "Info: Exe directory: %s\n", exe_dir);
+
+    /*
+     * Step 3: Find and validate .env — it sits next to the exe.
+     */
+    char env_path[MAX_URL_LEN];
+    build_env_path(exe_dir, env_path);
+
+    if (validate_env_exists(env_path) != 0) {
+        toast_error("Config Error",
+                    "Config file (.env) not found next to executable — exiting");
+        notify_cleanup();
+        return 1;
+    }
+
+    /*
+     * Step 4: Parse .env.
+     * Set backup_dir to exe_dir so parse_env_file can find .env.
+     * After parsing, backup_dir will be set to BACKUP_DIR from .env
+     * (or remain exe_dir if BACKUP_DIR was not specified).
      */
     backup_config config;
     memset(&config, 0, sizeof(backup_config));
-    apply_defaults(&config);
+    strncpy(config.backup_dir, exe_dir, MAX_URL_LEN - 1);
+    config.backup_dir[MAX_URL_LEN - 1] = '\0';
 
-    /*
-     * Step 3: Initialize the log file early so that all subsequent
-     * log events (including config parsing errors) are captured.
-     * Uses the default backup_dir (apply_defaults ensures it's set).
-     * After config is parsed, the log path may change — we re-init then.
-     */
-    char log_path[MAX_URL_LEN];
-    build_log_path(config.backup_dir, log_path);
-    log_init(log_path);
-
-    /*
-     * Step 4: Validate .env exists.
-     * Fail-fast: if .env is missing, exit immediately.
-     */
-    char env_path[MAX_URL_LEN];
-    build_env_path(config.backup_dir, env_path);
-
-    if (validate_env_exists(env_path) != 0) {
-        notify_cleanup();
-        return 1;
-    }
-
-    /*
-     * Step 5: Parse and validate .env.
-     * If mandatory fields are missing, exit immediately.
-     * Log events from parse_env_file are captured because log_init
-     * was called in Step 3 (above).
-     */
     if (parse_env_file(&config) != 0) {
-        log_error("startup", NULL,
-                  "Config validation failed — exiting");
+        fprintf(stderr, "Error: Config validation failed — exiting\n");
         toast_error("Config Error",
                     "Config validation failed — exiting (requires manual intervention)");
-        log_close();
+        notify_cleanup();
+        return 1;
+    }
+
+    fprintf(stderr, "Info: BACKUP_DIR: %s\n", config.backup_dir);
+
+    /*
+     * Step 5: Create BACKUP_DIR if it doesn't exist.
+     * The program should never require manual directory creation —
+     * it handles its own setup.
+     */
+    if (ensure_dir_exists(config.backup_dir) != 0) {
+        fprintf(stderr, "Error: Cannot create BACKUP_DIR: %s\n", config.backup_dir);
+        toast_error("Directory Error",
+                    "Cannot create BACKUP_DIR — check permissions and path");
         notify_cleanup();
         return 1;
     }
 
     /*
-     * Step 6: Re-initialize the log file with the correct path
-     * from the parsed config (BACKUP_DIR may differ from default).
-     * Close the default log first, then open with the real path.
+     * Step 6: Initialize the log file in BACKUP_DIR.
      */
-    log_close();
+    char log_path[MAX_URL_LEN];
     build_log_path(config.backup_dir, log_path);
 
     if (log_init(log_path) != 0) {
@@ -305,7 +317,7 @@ int main(void) {
     }
 
     /*
-     * Step 7: Fire "service started" toast.
+     * Step 8: Fire "service started" toast.
      */
     log_event(LOG_INFO, "main", NULL, "STARTED",
               "GitHub Backup service started successfully");
@@ -313,10 +325,10 @@ int main(void) {
                "GitHub Backup service is running in the background");
 
     /*
-     * Step 8: Enter the main backup loop.
+     * Step 9: Enter the main backup loop.
      * This function never returns under normal operation.
      */
-    run_main_loop(&config);
+    run_main_loop(&config, exe_dir);
 
     /*
      * Cleanup (only reached if the loop exits, which should

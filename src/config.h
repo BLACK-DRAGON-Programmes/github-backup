@@ -15,6 +15,8 @@
 
 #include "constants.h"
 
+#include <stddef.h>
+
 
 /**
  * Runtime configuration struct. Populated by parse_env_file() from the
@@ -55,12 +57,32 @@ int parse_env_file(backup_config *config);
 
 /**
  * Construct the full path to the .env file by appending ".env" to
- * the backup directory.
+ * the executable's directory. The .env file sits next to the exe.
  *
- * @param backup_dir  The BACKUP_DIR value (e.g., "D:\\BACKUP\\")
- * @param path_out    Output buffer (at least MAX_URL_LEN bytes)
+ * @param exe_dir    The directory containing the running executable
+ * @param path_out   Output buffer (at least MAX_URL_LEN bytes)
  */
-void build_env_path(const char *backup_dir, char *path_out);
+void build_env_path(const char *exe_dir, char *path_out);
+
+
+/**
+ * Get the directory containing the running executable.
+ * On Windows: uses GetModuleFileNameA(). On Linux: reads /proc/self/exe.
+ * Output always includes a trailing path separator.
+ *
+ * @param dir_out   Output buffer (at least MAX_URL_LEN bytes)
+ * @param dir_size  Size of the output buffer
+ */
+void get_exe_dir(char *dir_out, size_t dir_size);
+
+
+/**
+ * Ensure a directory exists, creating it (and parent directories) if needed.
+ * Returns 0 on success or if already exists, -1 on failure.
+ *
+ * @param path  The directory path to ensure
+ */
+int ensure_dir_exists(const char *path);
 
 
 /**
