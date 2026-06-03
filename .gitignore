@@ -1,0 +1,21 @@
+# === Secrets and environment ===
+.env
+.path
+
+# === Logs ===
+*.log
+
+# === Build intermediaries ===
+*.o
+*.obj
+*.exe
+*.exe.tmp
+
+# === IDE and editor config ===
+.DS_Store
+.vscode/
+.idea/
+
+# === OS files ===
+Thumbs.db
+Desktop.ini
