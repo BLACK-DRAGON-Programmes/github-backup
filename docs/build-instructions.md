@@ -17,7 +17,8 @@
 | Shell32 | Windows 10 built-in | Toast notification COM interfaces |
 | Ole32 | Windows 10 built-in | COM initialization |
 | RuntimeObject | Windows 10 built-in | Windows Runtime activation |
-| ShLwApi | Windows 10 built-in | Shell utility functions |
+| ShLwApi | Windows 10 built-in | Shell utility functions (path manipulation) |
+| ShlWApi / ShlObj | Windows Vista built-in | `SHCreateDirectoryExA` for recursive directory creation |
 
 ## Source Files
 
@@ -45,11 +46,18 @@ All source files are in `src/`:
 ### Compile Command
 
 ```bash
-gcc -Wall -Wextra -O2 -o backup.exe \
+gcc -Wall -Wextra -O2 -static -o backup.exe \
     src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c \
     -I src/ \
+    -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE \
     -lwinhttp -lkernel32 -lshell32 -lole32 -lruntimeobject -lshlwapi
 ```
+
+> **Note:** `-D_WIN32_WINNT=0x0600` is required for `SHCreateDirectoryExA` to be
+> declared in `<shlobj.h>`. Without it, MinGW-w64 defaults to an older
+> Windows version that hides the function prototype. The source code also
+> defines this macro as a fallback, but passing it via compiler flags
+> ensures consistency across all translation units.
 
 ### Compiler Flags
 
@@ -57,23 +65,30 @@ gcc -Wall -Wextra -O2 -o backup.exe \
 |------|---------|
 | `-Wall -Wextra` | Enable all common warnings. Catch potential bugs at compile time. |
 | `-O2` | Optimization level 2. Produces a fast binary without extreme compile times. |
+| `-static` | Produce a fully static executable with zero runtime dependencies. |
 | `-o backup.exe` | Output executable name. |
 | `-I src/` | Tell the compiler where to find header files. |
+| `-D_WIN32_WINNT=0x0600` | Target Windows Vista+. Required for `SHCreateDirectoryExA` declaration. |
+| `-DUNICODE -D_UNICODE` | Enable Unicode character set for Windows APIs. |
 | `-lwinhttp` | Link the WinHTTP library for HTTP operations. |
 | `-lkernel32` | Link Kernel32 for file I/O (CreateFileA, GetFileSize) and Sleep. |
-| `-lshell32` | Link Shell32 for toast notification COM interfaces. |
+| `-lshell32` | Link Shell32 for toast notification COM interfaces and `SHCreateDirectoryExA`. |
 | `-lole32` | Link Ole32 for COM initialization (CoInitializeEx). |
 | `-lruntimeobject` | Link RuntimeObject for Windows Runtime activation. |
 | `-lshlwapi` | Link ShLwApi for shell utility functions. |
 
-### Static Build (No Runtime Dependencies)
+### Static Build (Default)
 
-To produce a fully static executable with zero runtime dependencies, add `-static` to the compilation flags:
+The compile command above already includes `-static` for a fully static
+executable. Remove `-static` if you prefer dynamic linking (smaller binary,
+but requires MinGW runtime DLLs at runtime).
 
 ```bash
-gcc -Wall -Wextra -O2 -static -o backup.exe \
+# Dynamic build (smaller binary, requires MinGW DLLs)
+gcc -Wall -Wextra -O2 -o backup.exe \
     src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c \
     -I src/ \
+    -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE \
     -lwinhttp -lkernel32 -lshell32 -lole32 -lruntimeobject -lshlwapi
 ```
 
@@ -85,13 +100,13 @@ Three test files exist in `tests/`. Each tests a specific module:
 
 ```bash
 # Config module tests (11 tests: token/owner extraction, repo parsing, path construction)
-gcc -Wall -Wextra -o test_config.exe tests/test_config.c src/config.c src/logger.c src/notify.c -I src/ -lshell32 -lole32 -lruntimeobject
+gcc -Wall -Wextra -o test_config.exe tests/test_config.c src/config.c src/logger.c src/notify.c -I src/ -D_WIN32_WINNT=0x0600 -lshell32 -lole32 -lruntimeobject
 
 # Network module tests (15 tests: JSON string/int parsing, buffer truncation, null safety)
-gcc -Wall -Wextra -o test_network.exe tests/test_network.c src/network.c src/logger.c src/notify.c -I src/ -lwinhttp -lshell32 -lole32 -lruntimeobject
+gcc -Wall -Wextra -o test_network.exe tests/test_network.c src/network.c src/logger.c src/notify.c -I src/ -D_WIN32_WINNT=0x0600 -lwinhttp -lshell32 -lole32 -lruntimeobject
 
 # Backup module tests (11 tests: file verification, atomic write, temp cleanup)
-gcc -Wall -Wextra -o test_backup.exe tests/test_backup.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c -I src/ -lwinhttp -lshell32 -lole32 -lruntimeobject
+gcc -Wall -Wextra -o test_backup.exe tests/test_backup.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c -I src/ -D_WIN32_WINNT=0x0600 -lwinhttp -lshell32 -lole32 -lruntimeobject
 ```
 
 ### Running Tests
@@ -116,12 +131,18 @@ On the target Windows machine with a valid `.env` file:
 
 ### File Installation
 
-Copy these two files to the deployment directory (default `D:\BACKUP\`):
+Copy `backup.exe` and `.env` to the same directory. The executable
+automatically finds `.env` in its own directory — no hardcoded paths.
 
 | File | Source | Purpose |
 |------|--------|---------|
 | `backup.exe` | Build output | The compiled executable |
-| `.env` | From `src/env.example` | Configuration file (rename from .env.example, fill in values) |
+| `.env` | From `src/env.example` | Configuration file (rename, fill in values) |
+
+> **Both files must be in the same directory.** The executable determines
+> its own location via `GetModuleFileNameA()` and looks for `.env` next
+> to itself. If `.env` is not found next to the exe, the program exits with
+> an error.
 
 ### .env Configuration
 
@@ -154,8 +175,8 @@ LOG_MAX_SIZE_BYTES=1048576
    - New trigger: "At startup"
 5. **Actions tab:**
    - New action: "Start a program"
-   - Program: `D:\BACKUP\backup.exe`
-   - Start in: `D:\BACKUP\`
+   - Program: `D:\BACKUP\ghb\backup.exe`
+   - Start in: `D:\BACKUP\ghb\`
 6. **Conditions tab:**
    - Uncheck "Start the task only if the computer is on AC power"
    - Check "Start even if on batteries" (for laptops)
@@ -167,12 +188,14 @@ LOG_MAX_SIZE_BYTES=1048576
 ## File Structure After Deployment
 
 ```
-D:\BACKUP\                    (or whatever BACKUP_DIR is set to)
-├── backup.exe               (the compiled script)
-├── .env                     (configuration — never modify while running)
-├── backup.log               (created by the script — auto-rotated at 1 MiB)
-├── repo-name-1.zip          (latest backup of repo-name-1)
-├── repo-name-2.zip          (latest backup of repo-name-2)
+D:\BACKUP\ghb\                     (or any directory you choose)
+├── backup.exe                   (the compiled script)
+├── .env                         (configuration — must be next to exe)
+├── backup.log                   (created in BACKUP_DIR — auto-rotated at 1 MiB)
+
+D:\BACKUP\agent-workspace-1157\  (BACKUP_DIR — created automatically)
+├── repo-name-1.zip              (latest backup of repo-name-1)
+├── repo-name-2.zip              (latest backup of repo-name-2)
 └── ...
 ```
 
@@ -180,7 +203,7 @@ D:\BACKUP\                    (or whatever BACKUP_DIR is set to)
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| Program exits immediately | `.env` missing or corrupt | Check `.env` exists at `BACKUP_DIR\.env` and contains `GITHUB_BASE_URL` and `REPOS` |
+| Program exits immediately | `.env` missing or corrupt | Check `.env` exists in the same directory as `backup.exe` and contains `GITHUB_BASE_URL` and `REPOS` |
 | No zip files created | No internet / token invalid | Check `backup.log` for errors. Verify token in `.env` is valid. |
 | Toast "Invalid/expired token" | Token revoked or expired | Edit `.env` with a new token. Takes effect on next cycle. |
 | Toast "Rate Limited" | Too many API calls | Normal behavior. Script sleeps until reset window automatically. |

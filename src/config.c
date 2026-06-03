@@ -10,6 +10,18 @@
  * variable names from constants.h.
  */
 
+/*
+ * Target Windows Vista or later — required for SHCreateDirectoryExA to be
+ * declared in <shlobj.h>. Without these macros, MinGW-w64 defaults to an
+ * older NTDDI version that hides the function prototype.
+ */
+#ifndef WINVER
+#define WINVER             0x0600
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT       0x0600
+#endif
+
 #include "config.h"
 #include "logger.h"
 #include "notify.h"
@@ -23,7 +35,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#include <shlwapi.h>
+#include <shlobj.h>
 #else
 #include <unistd.h>
 #include <limits.h>
@@ -139,8 +151,7 @@ int ensure_dir_exists(const char *path) {
     return -1;
     #else
     char tmp[MAX_URL_LEN];
-    strncpy(tmp, path, MAX_URL_LEN - 1);
-    tmp[MAX_URL_LEN - 1] = '\0';
+    snprintf(tmp, sizeof(tmp), "%s", path);
 
     /* Remove trailing slash if present */
     size_t len = strlen(tmp);
@@ -302,8 +313,7 @@ int parse_repos(const char *repos_raw,
                 char repos[][MAX_REPO_NAME_LEN], int *count) {
     *count = 0;
     char buf[MAX_URL_LEN];
-    strncpy(buf, repos_raw, MAX_URL_LEN - 1);
-    buf[MAX_URL_LEN - 1] = '\0';
+    snprintf(buf, sizeof(buf), "%s", repos_raw);
 
     char *saveptr = NULL;
     char *token = strtok_r(buf, ",", &saveptr);
@@ -388,8 +398,7 @@ int parse_env_file(backup_config *config) {
 
     /* Preserve exe_dir across the memset — save it, restore after */
     char exe_dir[MAX_URL_LEN];
-    strncpy(exe_dir, config->backup_dir, MAX_URL_LEN - 1);
-    exe_dir[MAX_URL_LEN - 1] = '\0';
+    snprintf(exe_dir, sizeof(exe_dir), "%s", config->backup_dir);
 
     /* Zero out the struct */
     memset(config, 0, sizeof(backup_config));
@@ -412,14 +421,14 @@ int parse_env_file(backup_config *config) {
 
         /* Match against known env variable names */
         if (strcmp(key, ENV_VAR_GITHUB_BASE_URL) == 0) {
-            strncpy(config->base_url, value, MAX_URL_LEN - 1);
-            config->base_url[MAX_URL_LEN - 1] = '\0';
+            snprintf(config->base_url, sizeof(config->base_url),
+                     "%s", value);
         } else if (strcmp(key, ENV_VAR_REPOS) == 0) {
-            strncpy(config->repos_raw, value, MAX_URL_LEN - 1);
-            config->repos_raw[MAX_URL_LEN - 1] = '\0';
+            snprintf(config->repos_raw, sizeof(config->repos_raw),
+                     "%s", value);
         } else if (strcmp(key, ENV_VAR_BACKUP_DIR) == 0) {
-            strncpy(config->backup_dir, value, MAX_URL_LEN - 1);
-            config->backup_dir[MAX_URL_LEN - 1] = '\0';
+            snprintf(config->backup_dir, sizeof(config->backup_dir),
+                     "%s", value);
         } else if (strcmp(key, ENV_VAR_CYCLE_INTERVAL) == 0) {
             config->cycle_interval = atoi(value);
         } else if (strcmp(key, ENV_VAR_HTTP_TIMEOUT) == 0) {

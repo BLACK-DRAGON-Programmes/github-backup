@@ -138,8 +138,8 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
          */
         backup_config cycle_config;
         memset(&cycle_config, 0, sizeof(backup_config));
-        strncpy(cycle_config.backup_dir, exe_dir, MAX_URL_LEN - 1);
-        cycle_config.backup_dir[MAX_URL_LEN - 1] = '\0';
+        snprintf(cycle_config.backup_dir, sizeof(cycle_config.backup_dir),
+                 "%s", exe_dir);
 
         if (parse_env_file(&cycle_config) != 0) {
             log_error("main", NULL,
@@ -265,8 +265,7 @@ int main(void) {
      */
     backup_config config;
     memset(&config, 0, sizeof(backup_config));
-    strncpy(config.backup_dir, exe_dir, MAX_URL_LEN - 1);
-    config.backup_dir[MAX_URL_LEN - 1] = '\0';
+    snprintf(config.backup_dir, sizeof(config.backup_dir), "%s", exe_dir);
 
     if (parse_env_file(&config) != 0) {
         fprintf(stderr, "Error: Config validation failed — exiting\n");

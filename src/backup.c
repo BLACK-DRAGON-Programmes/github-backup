@@ -180,8 +180,14 @@ backup_result backup_single_repo(const char *owner, const char *repo,
                                  const char *token,
                                  const backup_config *config) {
     char branch[MAX_REPO_NAME_LEN] = {0};
-    char temp_path[MAX_URL_LEN] = {0};
-    char final_path[MAX_URL_LEN] = {0};
+    /*
+     * temp_path and final_path must accommodate backup_dir (up to MAX_URL_LEN)
+     * plus a repo name (up to MAX_REPO_NAME_LEN) plus a file suffix.
+     * MAX_URL_LEN alone is insufficient when backup_dir is very long —
+     * GCC's -Wformat-truncation correctly flags the overflow risk.
+     */
+    char temp_path[MAX_URL_LEN + MAX_REPO_NAME_LEN + 16] = {0};
+    char final_path[MAX_URL_LEN + MAX_REPO_NAME_LEN + 16] = {0};
     char detail[MAX_URL_LEN];
 
     log_event(LOG_INFO, "backup", repo, "START",
