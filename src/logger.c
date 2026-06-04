@@ -12,6 +12,7 @@
  * the configured size threshold (Decision 003).
  */
 
+#include "console.h"
 #include "logger.h"
 
 #include <stdio.h>
@@ -30,6 +31,9 @@ static FILE *g_log_file = NULL;
 
 /** Path to the current log file (needed for rotation reopen). */
 static char g_log_path[MAX_URL_LEN] = {0};
+
+/** Whether to also print log entries to the console with ANSI colors. */
+static int g_console_output = 0;
 
 
 /* ─── Timestamp ──────────────────────────────────────────────── */
@@ -171,6 +175,14 @@ void rotate_log(long max_size_bytes) {
     }
 }
 
+
+void log_set_console_output(int enabled) {
+    g_console_output = enabled;
+}
+
+int log_get_console_output(void) {
+    return g_console_output;
+}
 
 void log_close(void) {
     if (g_log_file != NULL && g_log_file != stderr) {

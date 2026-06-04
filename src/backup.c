@@ -46,14 +46,18 @@
  * @param repo       Repo name (for error logging)
  * @return 0 if path fits, -1 if it would overflow
  */
+/* Maximum path buffer size: backup_dir + repo name + file suffix + NUL.
+ * Defined here so validate_path_length and the stack buffers agree. */
+#define MAX_PATH_BUF  (MAX_URL_LEN + MAX_REPO_NAME_LEN + 16)
+
 static int validate_path_length(size_t dir_len, size_t name_len,
                                 const char *repo) {
-    if (dir_len + name_len >= MAX_URL_LEN) {
+    if (dir_len + name_len >= MAX_PATH_BUF) {
         char detail[MAX_URL_LEN];
         snprintf(detail, sizeof(detail),
                  "Path too long: backup_dir (%zu) + repo name (%zu) "
-                 "exceeds MAX_URL_LEN (%d) — shorten BACKUP_DIR in .env",
-                 dir_len, name_len, MAX_URL_LEN);
+                 "exceeds MAX_PATH_BUF (%d) — shorten BACKUP_DIR in .env",
+                 dir_len, name_len, MAX_PATH_BUF);
         log_error("backup", repo, detail);
         toast_error("Path Too Long",
                     "BACKUP_DIR + repo name exceeds maximum path length");
@@ -183,11 +187,11 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     /*
      * temp_path and final_path must accommodate backup_dir (up to MAX_URL_LEN)
      * plus a repo name (up to MAX_REPO_NAME_LEN) plus a file suffix.
-     * MAX_URL_LEN alone is insufficient when backup_dir is very long —
-     * GCC's -Wformat-truncation correctly flags the overflow risk.
+     * validate_path_length already ensures the combined length fits within
+     * MAX_PATH_BUF, so the snprintf calls below cannot truncate in practice.
      */
-    char temp_path[MAX_URL_LEN + MAX_REPO_NAME_LEN + 16] = {0};
-    char final_path[MAX_URL_LEN + MAX_REPO_NAME_LEN + 16] = {0};
+    char temp_path[MAX_PATH_BUF] = {0};
+    char final_path[MAX_PATH_BUF] = {0};
     char detail[MAX_URL_LEN];
 
     log_event(LOG_INFO, "backup", repo, "START",

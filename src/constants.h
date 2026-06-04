@@ -388,4 +388,27 @@
 #define JSON_FIELD_DEFAULT_BRANCH     "default_branch"
 
 
+/* ================================================================
+ * SINGLE-INSTANCE AND IPC CONSTANTS
+ *
+ * Named objects for single-instance detection (mutex) and graceful
+ * shutdown signaling (event). Using the Global\ namespace ensures
+ * the mutex is visible across all sessions on the machine.
+ * Spec Section 10: Single-instance detection via named mutex.
+ * Spec Section 11: Shutdown via named event.
+ * ================================================================ */
+
+/** Named mutex for single-instance detection. */
+#define BACKUP_MUTEX_NAME    "Global\\GitHubBackupMutex"
+
+/** Named event for graceful shutdown signaling. */
+#define BACKUP_SHUTDOWN_EVENT_NAME "Global\\GitHubBackupShutdown"
+
+/** Polling interval (ms) for checking shutdown event during sleep. */
+#define SHUTDOWN_CHECK_INTERVAL_MS  1000
+
+/** Maximum length of a formatted console log line. */
+#define MAX_CONSOLE_LINE_LEN        1024
+
+
 #endif /* CONSTANTS_H */

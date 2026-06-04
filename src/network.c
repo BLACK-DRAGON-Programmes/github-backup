@@ -142,9 +142,17 @@ static void parse_rate_limit_headers(HINTERNET h_request,
 /* ─── Public Functions (Windows) ──────────────────────────── */
 
 int network_init(void) {
+    /*
+     * WINHTTP_ACCESS_TYPE_NO_PROXY bypasses WPAD (Web Proxy Auto-Discovery).
+     * WINHTTP_ACCESS_TYPE_DEFAULT_PROXY can block for 60+ seconds on
+     * systems with slow or misconfigured proxy auto-detection — the user
+     * sees the program hang after printing BACKUP_DIR with no output.
+     * The backup tool connects directly to api.github.com and
+     * codeload.github.com, so proxy detection is unnecessary.
+     */
     g_hSession = WinHttpOpen(
         L"GitHubBackup/1.0",                 /* User agent */
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,     /* Use system proxy settings */
+        WINHTTP_ACCESS_TYPE_NO_PROXY,          /* Direct connection — no WPAD */
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
         0

@@ -82,4 +82,21 @@ void rotate_log(long max_size_bytes);
 void log_close(void);
 
 
+/**
+ * Enable or disable console output. When enabled, log_event prints
+ * to the console with ANSI colors in addition to writing to the file.
+ * When disabled (background mode), only file output is active.
+ *
+ * @param enabled  1 to enable console output, 0 to disable
+ */
+void log_set_console_output(int enabled);
+
+/**
+ * Returns whether console output is currently enabled.
+ *
+ * @return 1 if console output is active, 0 if not
+ */
+int log_get_console_output(void);
+
+
 #endif /* LOGGER_H */
