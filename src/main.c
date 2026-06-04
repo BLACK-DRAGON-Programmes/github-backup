@@ -250,6 +250,9 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
          * Step 1: Check internet connectivity.
          * If no internet, skip the cycle and sleep.
          */
+        fprintf(stderr, "[DBG] main_loop: Checking connectivity...\n");
+        fflush(stderr);
+
         if (!check_connectivity(config->connectivity_timeout)) {
             log_event(LOG_WARNING, "main", NULL, "SKIPPED",
                       "No internet detected — cycle skipped");
@@ -262,6 +265,9 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
         /*
          * Step 2: Fresh config read every cycle.
          */
+        fprintf(stderr, "[DBG] main_loop: Re-reading .env...\n");
+        fflush(stderr);
+
         backup_config cycle_config;
         memset(&cycle_config, 0, sizeof(backup_config));
         snprintf(cycle_config.backup_dir, sizeof(cycle_config.backup_dir),
@@ -348,6 +354,8 @@ int main(int argc, char *argv[]) {
      * Step 1: Parse command-line arguments.
      * Check for --shutdown and --background flags.
      */
+    fprintf(stderr, "[DBG] main: Startup — parsing arguments\n");
+    fflush(stderr);
     int want_shutdown = 0;
     int want_background = 0;
 
@@ -363,6 +371,9 @@ int main(int argc, char *argv[]) {
      * Step 2: Initialize notification subsystem (COM on Windows).
      * Must happen first so that startup errors can fire toasts.
      */
+    fprintf(stderr, "[DBG] main: Initializing COM (notifications)...\n");
+    fflush(stderr);
+
     if (notify_init() != 0) {
         fprintf(stderr, "Warning: Toast notifications unavailable\n");
     }
@@ -371,6 +382,9 @@ int main(int argc, char *argv[]) {
      * Step 3: Check for single instance.
      * If another instance is running, enter log viewer or shutdown mode.
      */
+    fprintf(stderr, "[DBG] main: Checking single instance (mutex)...\n");
+    fflush(stderr);
+
     int instance_result = check_single_instance();
 
     if (instance_result == 1) {
@@ -413,6 +427,9 @@ int main(int argc, char *argv[]) {
     /*
      * Step 4: Determine where this executable lives.
      */
+    fprintf(stderr, "[DBG] main: Resolving exe directory...\n");
+    fflush(stderr);
+
     char exe_dir[MAX_URL_LEN];
     get_exe_dir(exe_dir, sizeof(exe_dir));
 
@@ -430,6 +447,8 @@ int main(int argc, char *argv[]) {
      */
     char env_path[MAX_URL_LEN];
     build_env_path(exe_dir, env_path);
+    fprintf(stderr, "[DBG] main: Validating .env at %s\n", env_path);
+    fflush(stderr);
 
     if (validate_env_exists(env_path) != 0) {
         toast_error("Config Error",
@@ -442,6 +461,9 @@ int main(int argc, char *argv[]) {
     /*
      * Step 6: Parse .env.
      */
+    fprintf(stderr, "[DBG] main: Parsing .env...\n");
+    fflush(stderr);
+
     backup_config config;
     memset(&config, 0, sizeof(backup_config));
     snprintf(config.backup_dir, sizeof(config.backup_dir), "%s", exe_dir);
@@ -456,10 +478,16 @@ int main(int argc, char *argv[]) {
     }
 
     fprintf(stderr, "Info: BACKUP_DIR: %s\n", config.backup_dir);
+    fprintf(stderr, "[DBG] main: Parsed %d repos, owner=%s, timeout=%dms, cycle=%ds\n",
+            config.repo_count, config.owner, config.http_timeout, config.cycle_interval);
+    fflush(stderr);
 
     /*
      * Step 7: Create BACKUP_DIR if it doesn't exist.
      */
+    fprintf(stderr, "[DBG] main: Ensuring BACKUP_DIR exists: %s\n", config.backup_dir);
+    fflush(stderr);
+
     if (ensure_dir_exists(config.backup_dir) != 0) {
         fprintf(stderr, "Error: Cannot create BACKUP_DIR: %s\n", config.backup_dir);
         toast_error("Directory Error",
@@ -474,6 +502,8 @@ int main(int argc, char *argv[]) {
      */
     char log_path[MAX_URL_LEN];
     build_log_path(config.backup_dir, log_path);
+    fprintf(stderr, "[DBG] main: Initializing log file at %s\n", log_path);
+    fflush(stderr);
 
     if (log_init(log_path) != 0) {
         toast_error("Log Error",
@@ -483,12 +513,17 @@ int main(int argc, char *argv[]) {
     /*
      * Step 9: Initialize console for ANSI output.
      */
+    fprintf(stderr, "[DBG] main: Initializing console (ANSI)...\n");
+    fflush(stderr);
     console_init();
     log_set_console_output(console_is_active());
 
     /*
      * Step 10: Initialize the network session.
      */
+    fprintf(stderr, "[DBG] main: Initializing network (WinHTTP)...\n");
+    fflush(stderr);
+
     if (network_init() != 0) {
         log_error("startup", NULL,
                   "Network initialization failed — cannot proceed");
@@ -505,6 +540,9 @@ int main(int argc, char *argv[]) {
      * Step 11: Create the shutdown event.
      * This event is checked during sleep intervals and by --shutdown.
      */
+    fprintf(stderr, "[DBG] main: Creating shutdown event...\n");
+    fflush(stderr);
+
 #ifdef _WIN32
     g_shutdown_event = CreateEventA(NULL, TRUE, FALSE,
                                    BACKUP_SHUTDOWN_EVENT_NAME);
@@ -517,6 +555,9 @@ int main(int argc, char *argv[]) {
     /*
      * Step 12: Register Ctrl+C handler for graceful shutdown.
      */
+    fprintf(stderr, "[DBG] main: Registering Ctrl+C handler...\n");
+    fflush(stderr);
+
 #ifdef _WIN32
     SetConsoleCtrlHandler(ctrl_handler, TRUE);
 #else
@@ -529,6 +570,8 @@ int main(int argc, char *argv[]) {
      * AFTER all startup messages have been printed.
      */
     if (want_background) {
+        fprintf(stderr, "[DBG] main: Detaching console (--background)\n");
+        fflush(stderr);
 #ifdef _WIN32
         FreeConsole();
         log_set_console_output(0);  /* No console → no console output */

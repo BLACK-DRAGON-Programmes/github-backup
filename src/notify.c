@@ -76,17 +76,25 @@ static void build_toast_xml(char *xml_out, int xml_len,
 
 
 int notify_init(void) {
+    fprintf(stderr, "[DBG] notify: Initializing COM (STA)...\n");
+    fflush(stderr);
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
+        fprintf(stderr, "[DBG] notify: COM init FAILED (hr=0x%lx)\n", (unsigned long)hr);
+        fflush(stderr);
         log_error("notify", NULL, "COM initialization failed");
         return -1;
     }
     g_com_initialized = 1;
+    fprintf(stderr, "[DBG] notify: COM initialized successfully\n");
+    fflush(stderr);
     return 0;
 }
 
 
 void toast_info(const char *title, const char *message) {
+    fprintf(stderr, "[DBG] notify: [INFO]  '%s' — '%s'\n", title, message);
+    fflush(stderr);
     log_event(LOG_INFO, "toast", NULL, "INFO", message);
     /* Windows toast implementation below — see platform guard */
     #ifdef _WIN32
@@ -115,6 +123,8 @@ void toast_info(const char *title, const char *message) {
 
 
 void toast_success(const char *repo, const char *message) {
+    fprintf(stderr, "[DBG] notify: [OK]     '%s' — '%s'\n", repo, message);
+    fflush(stderr);
     log_event(LOG_SUCCESS, "toast", repo, "OK", message);
     #ifdef _WIN32
     if (!g_com_initialized) return;
@@ -129,6 +139,8 @@ void toast_success(const char *repo, const char *message) {
 
 
 void toast_error(const char *title, const char *message) {
+    fprintf(stderr, "[DBG] notify: [ERROR] '%s' — '%s'\n", title, message);
+    fflush(stderr);
     log_event(LOG_ERROR, "toast", NULL, "FAILED", message);
     #ifdef _WIN32
     if (!g_com_initialized) return;
@@ -140,6 +152,8 @@ void toast_error(const char *title, const char *message) {
 
 
 void notify_cleanup(void) {
+    fprintf(stderr, "[DBG] notify: Cleanup — CoUninitialize\n");
+    fflush(stderr);
     if (g_com_initialized) {
         CoUninitialize();
         g_com_initialized = 0;

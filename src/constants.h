@@ -317,6 +317,23 @@
 
 
 /**
+ * Name of the .env variable containing a standalone personal access
+ * token. Alternative to embedding the token in GITHUB_BASE_URL.
+ * When present, takes precedence for authentication.
+ * Format: ghp_xxxxxxxxxxxxxxxxxxxx
+ */
+#define ENV_VAR_GITHUB_TOKEN          "GITHUB_TOKEN"
+
+
+/**
+ * Name of the .env variable containing the target GitHub account or
+ * organization name. Used with GITHUB_TOKEN when GITHUB_BASE_URL
+ * is not set. Specifies the target account for API requests.
+ */
+#define ENV_VAR_GITHUB_OWNER          "GITHUB_OWNER"
+
+
+/**
  * Name of the .env variable containing the comma-separated list of
  * repository names to back up.
  * Format: repo-one,repo-two,repo-three

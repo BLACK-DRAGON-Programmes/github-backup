@@ -183,6 +183,9 @@ int atomic_write(const char *temp_path, const char *final_path) {
 backup_result backup_single_repo(const char *owner, const char *repo,
                                  const char *token,
                                  const backup_config *config) {
+    fprintf(stderr, "[DBG] backup: === Starting backup for '%s' ===\n", repo);
+    fflush(stderr);
+
     char branch[MAX_REPO_NAME_LEN] = {0};
     /*
      * temp_path and final_path must accommodate backup_dir (up to MAX_URL_LEN)
@@ -196,6 +199,8 @@ backup_result backup_single_repo(const char *owner, const char *repo,
 
     log_event(LOG_INFO, "backup", repo, "START",
               "Beginning backup for repository");
+    fprintf(stderr, "[DBG] backup: Resolving default branch for %s/%s...\n", owner, repo);
+    fflush(stderr);
 
     /*
      * Step 1: Resolve the default branch.
@@ -207,6 +212,8 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     );
 
     if (branch_result != 0) {
+        fprintf(stderr, "[DBG] backup: get_default_branch FAILED (code=%d)\n", branch_result);
+        fflush(stderr);
         /*
          * get_default_branch returns specific HTTP status codes on API
          * failures so we can classify the error precisely. Network errors
@@ -227,6 +234,8 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     snprintf(detail, sizeof(detail),
              "Default branch: %s — downloading zip archive", branch);
     log_event(LOG_INFO, "backup", repo, "OK", detail);
+    fprintf(stderr, "[DBG] backup: Branch='%s' — constructing paths...\n", branch);
+    fflush(stderr);
 
     /*
      * Step 2: Validate and construct file paths for the atomic write
@@ -261,12 +270,17 @@ backup_result backup_single_repo(const char *owner, const char *repo,
      * Step 3: Download the zip archive to the temporary file.
      * The download streams directly to disk — no memory buffering.
      */
+    fprintf(stderr, "[DBG] backup: Downloading zip to %s\n", temp_path);
+    fflush(stderr);
+
     int download_result = download_repo_zip(
         owner, repo, branch, token, temp_path,
         config->http_timeout
     );
 
     if (download_result != 0) {
+        fprintf(stderr, "[DBG] backup: download_repo_zip FAILED (code=%d)\n", download_result);
+        fflush(stderr);
         cleanup_temp_file(temp_path);
 
         if (download_result == -2) {
@@ -279,6 +293,9 @@ backup_result backup_single_repo(const char *owner, const char *repo,
      * Step 4: Verify the downloaded file.
      * Check that it exists, is non-zero in size, and is readable.
      */
+    fprintf(stderr, "[DBG] backup: Verifying downloaded file at %s...\n", temp_path);
+    fflush(stderr);
+
     if (verify_downloaded_file(temp_path) != 0) {
         log_error("backup", repo,
                   "Downloaded file verification failed — corrupt or empty");
@@ -291,6 +308,9 @@ backup_result backup_single_repo(const char *owner, const char *repo,
      * Step 5: Atomic write — delete old backup, rename new.
      * At no point does the repo have zero valid backups.
      */
+    fprintf(stderr, "[DBG] backup: Atomic write: %s -> %s\n", temp_path, final_path);
+    fflush(stderr);
+
     if (atomic_write(temp_path, final_path) != 0) {
         /*
          * Rename failed. The temp file still exists.
@@ -309,6 +329,8 @@ backup_result backup_single_repo(const char *owner, const char *repo,
              "Backup completed successfully (branch: %s)", branch);
     log_event(LOG_SUCCESS, "backup", repo, "OK", detail);
     toast_success(repo, "Backup completed successfully");
+    fprintf(stderr, "[DBG] backup: === '%s' BACKUP COMPLETE ===\n", repo);
+    fflush(stderr);
 
     return BACKUP_OK;
 }
@@ -320,6 +342,9 @@ backup_result backup_single_repo(const char *owner, const char *repo,
 
 int run_backup_cycle(const backup_config *config,
                      int *succeeded, int *failed) {
+    fprintf(stderr, "[DBG] backup: === CYCLE START — %d repos ===\n", config->repo_count);
+    fflush(stderr);
+
     *succeeded = 0;
     *failed = 0;
 
