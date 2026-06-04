@@ -435,7 +435,9 @@ int main(int argc, char *argv[]) {
 
     if (exe_dir[0] == '\0') {
         fprintf(stderr, "Error: Cannot determine executable directory\n");
+#ifdef _WIN32
         if (g_backup_mutex) CloseHandle(g_backup_mutex);
+#endif
         notify_cleanup();
         return 1;
     }
@@ -453,7 +455,9 @@ int main(int argc, char *argv[]) {
     if (validate_env_exists(env_path) != 0) {
         toast_error("Config Error",
                     "Config file (.env) not found next to executable — exiting");
+#ifdef _WIN32
         if (g_backup_mutex) CloseHandle(g_backup_mutex);
+#endif
         notify_cleanup();
         return 1;
     }
@@ -472,7 +476,9 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: Config validation failed — exiting\n");
         toast_error("Config Error",
                     "Config validation failed — exiting (requires manual intervention)");
+#ifdef _WIN32
         if (g_backup_mutex) CloseHandle(g_backup_mutex);
+#endif
         notify_cleanup();
         return 1;
     }
@@ -492,7 +498,9 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: Cannot create BACKUP_DIR: %s\n", config.backup_dir);
         toast_error("Directory Error",
                     "Cannot create BACKUP_DIR — check permissions and path");
+#ifdef _WIN32
         if (g_backup_mutex) CloseHandle(g_backup_mutex);
+#endif
         notify_cleanup();
         return 1;
     }
@@ -530,7 +538,9 @@ int main(int argc, char *argv[]) {
         toast_error("Network Error",
                     "Failed to initialize HTTP session — exiting");
         log_close();
+#ifdef _WIN32
         if (g_backup_mutex) CloseHandle(g_backup_mutex);
+#endif
         notify_cleanup();
         console_cleanup();
         return 1;

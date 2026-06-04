@@ -427,5 +427,12 @@
 /** Maximum length of a formatted console log line. */
 #define MAX_CONSOLE_LINE_LEN        1024
 
+/**
+ * Maximum length of a constructed file path (backup_dir + repo name + suffix + NUL).
+ * Used for stack-allocated path buffers in backup.c and notify.c.
+ * Calculated as MAX_URL_LEN + MAX_REPO_NAME_LEN + 16 (suffix + separator + NUL).
+ */
+#define MAX_PATH_BUF                (MAX_URL_LEN + MAX_REPO_NAME_LEN + 16)
+
 
 #endif /* CONSTANTS_H */

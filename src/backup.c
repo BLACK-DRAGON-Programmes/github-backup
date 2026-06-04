@@ -46,9 +46,8 @@
  * @param repo       Repo name (for error logging)
  * @return 0 if path fits, -1 if it would overflow
  */
-/* Maximum path buffer size: backup_dir + repo name + file suffix + NUL.
- * Defined here so validate_path_length and the stack buffers agree. */
-#define MAX_PATH_BUF  (MAX_URL_LEN + MAX_REPO_NAME_LEN + 16)
+/* MAX_PATH_BUF is defined in constants.h — used by validate_path_length
+ * and the stack buffers below. */
 
 static int validate_path_length(size_t dir_len, size_t name_len,
                                 const char *repo) {

@@ -175,21 +175,23 @@ int network_init(void) {
 
 
 int check_connectivity(int timeout_ms) {
-    (void)timeout_ms;  /* WinHttpConnect has no timeout parameter — resolved at request level */
     if (g_hSession == NULL) {
         log_error("network", NULL,
                   "Cannot check connectivity — session not initialized");
         return 0;
     }
 
-    fprintf(stderr, "[DBG] check_connectivity: Connecting to %S:%d...\n",
-            CONNECTIVITY_HOST, INTERNET_DEFAULT_HTTPS_PORT);
+    fprintf(stderr, "[DBG] check_connectivity: Connecting to %S:%d (timeout=%dms)...\n",
+            CONNECTIVITY_HOST, INTERNET_DEFAULT_HTTPS_PORT, timeout_ms);
     fflush(stderr);
 
     /*
-     * Connect to github.com. This verifies DNS resolution and TCP
-     * connection without sending a full HTTP request — the lightest
-     * possible connectivity probe.
+     * Use WinHttpConnect + WinHttpOpenRequest + WinHttpSendRequest with
+     * per-request timeouts to implement the connectivity check with timeout.
+     * WinHttpConnect alone has no timeout parameter — if DNS resolution
+     * hangs, it blocks indefinitely. By opening a request and setting
+     * RESOLVE/CONNECT/RECEIVE timeouts, we ensure the entire check
+     * completes within the configured CONNECTIVITY_CHECK_TIMEOUT_MS.
      */
     HINTERNET h_connect = WinHttpConnect(
         g_hSession,
@@ -207,10 +209,66 @@ int check_connectivity(int timeout_ms) {
         return 0;
     }
 
+    HINTERNET h_request = WinHttpOpenRequest(
+        h_connect,
+        L"HEAD",                    /* HEAD request — no body download */
+        L"/",                       /* Root path */
+        NULL,
+        WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES,
+        WINHTTP_FLAG_SECURE
+    );
+
+    if (h_request == NULL) {
+        DWORD err = GetLastError();
+        fprintf(stderr, "[DBG] check_connectivity: WinHttpOpenRequest FAILED (error %lu)\n", err);
+        fflush(stderr);
+        WinHttpCloseHandle(h_connect);
+        return 0;
+    }
+
+    /* Apply timeout to all phases (resolve, connect, send, receive) */
+    DWORD timeout = to_winhttp_timeout(timeout_ms);
+    if (timeout > 0) {
+        WinHttpSetOption(h_request, WINHTTP_OPTION_RESOLVE_TIMEOUT,
+                         &timeout, sizeof(timeout));
+        WinHttpSetOption(h_request, WINHTTP_OPTION_CONNECT_TIMEOUT,
+                         &timeout, sizeof(timeout));
+        WinHttpSetOption(h_request, WINHTTP_OPTION_RECEIVE_TIMEOUT,
+                         &timeout, sizeof(timeout));
+    }
+
+    /* Send the request — this is where the timeout applies */
+    BOOL send_result = WinHttpSendRequest(
+        h_request,
+        WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+        WINHTTP_NO_REQUEST_DATA, 0, 0, 0
+    );
+
+    if (!send_result) {
+        DWORD err = GetLastError();
+        fprintf(stderr, "[DBG] check_connectivity: WinHttpSendRequest FAILED (error %lu)\n", err);
+        fflush(stderr);
+        if (err == ERROR_INTERNET_TIMEOUT) {
+            fprintf(stderr, "[DBG] check_connectivity: Timed out after %dms — no internet\n",
+                    timeout_ms);
+            fflush(stderr);
+        }
+        WinHttpCloseHandle(h_request);
+        WinHttpCloseHandle(h_connect);
+        log_event(LOG_WARNING, "network", NULL, "FAILED",
+                  "Connectivity check failed — cannot reach github.com");
+        return 0;
+    }
+
+    /* We don't need to read the response — the fact that SendRequest
+     * succeeded means DNS resolved, TCP connected, and TLS negotiated. */
+    WinHttpCloseHandle(h_request);
+    WinHttpCloseHandle(h_connect);
+
     fprintf(stderr, "[DBG] check_connectivity: Connected to %S successfully\n",
             CONNECTIVITY_HOST);
     fflush(stderr);
-    WinHttpCloseHandle(h_connect);
     log_event(LOG_INFO, "network", NULL, "OK",
               "Internet connectivity confirmed");
     return 1;
@@ -810,6 +868,14 @@ int download_repo_zip(const char *owner, const char *repo,
         return -1;
     }
 
+    /*
+     * Retry loop for rate limiting (Spec Section 7).
+     * On HTTP 429 with a valid X-RateLimit-Reset header, sleep until
+     * the reset window and retry the download once.
+     */
+    int attempt;
+    for (attempt = 0; attempt < 2; attempt++) {
+
     /* Connect to the API host */
     fprintf(stderr, "[DBG] download_repo_zip: Connecting to %S...\n", GITHUB_API_HOST);
     fflush(stderr);
@@ -960,14 +1026,48 @@ int download_repo_zip(const char *owner, const char *repo,
         snprintf(detail, sizeof(detail),
                  "Zip download returned HTTP %lu for %s",
                  status_code, repo);
-        fprintf(stderr, "[DBG] download_repo_zip: Non-200 status, aborting download\n");
+        fprintf(stderr, "[DBG] download_repo_zip: Non-200 status (HTTP %lu)\n", status_code);
         fflush(stderr);
-        log_error("network", repo, detail);
 
         if (status_code == HTTP_RATE_LIMITED) {
+            /*
+             * Spec Section 7: sleep until the reset window and retry.
+             * Read rate limit headers to determine wait time.
+             */
+            rate_limit_info rate = {0, 0, 0};
+            parse_rate_limit_headers(h_request, &rate);
+
+            WinHttpCloseHandle(h_request);
+            WinHttpCloseHandle(h_connect);
+
+            if (attempt == 0 && rate.headers_parsed && rate.reset_time > 0) {
+                time_t now = time(NULL);
+                long wait_seconds = (long)(rate.reset_time - (long)now);
+                if (wait_seconds > 0 && wait_seconds < 3600) {
+                    char rl_detail[256];
+                    snprintf(rl_detail, sizeof(rl_detail),
+                             "Rate limited on zip download — sleeping %ld seconds until reset window",
+                             wait_seconds);
+                    log_event(LOG_WARNING, "network", repo, "RATE_LIMITED", rl_detail);
+                    toast_error("Rate Limited",
+                               "GitHub API rate limit — sleeping until reset");
+                    fprintf(stderr, "[DBG] download_repo_zip: Rate limited, sleeping %lds...\n",
+                            wait_seconds);
+                    fflush(stderr);
+
+                    for (long s = 0; s < wait_seconds; s++) {
+                        Sleep(1000);
+                    }
+                    continue;  /* Retry the download */
+                }
+            }
+
+            log_error("network", repo, detail);
             toast_error("Rate Limited", repo);
+            return -1;
         }
 
+        log_error("network", repo, detail);
         WinHttpCloseHandle(h_request);
         WinHttpCloseHandle(h_connect);
         return -1;
@@ -1044,6 +1144,10 @@ int download_repo_zip(const char *owner, const char *repo,
     log_event(LOG_INFO, "network", repo, "OK",
               "Zip archive downloaded successfully");
     return 0;
+    }  /* end retry loop */
+
+    /* Should not reach here — the loop only continues on rate limit retry */
+    return -1;
 }
 
 

@@ -26,20 +26,22 @@ All source files are in `src/`:
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `constants.h` | 392 | Compile-time constants (buffer sizes, HTTP codes, API paths, env var names) |
-| `logger.h` | 85 | Logging interface (log levels, init/event/error/rotate/close) |
-| `logger.c` | 182 | Logging implementation (file append, ISO timestamps, size-based rotation) |
+| `constants.h` | 439 | Compile-time constants (buffer sizes, HTTP codes, API paths, env var names, IPC names, path buffer) |
+| `console.h` | 65 | Console output interface (ANSI colors, log viewer, instance detection) |
+| `console.c` | 228 | Console implementation (VT100 init, color-coded output, log tail loop) |
+| `logger.h` | 103 | Logging interface (log levels, init/event/error/rotate/close, console toggle) |
+| `logger.c` | 216 | Logging implementation (file append, ISO timestamps, size-based rotation, stderr dev output) |
 | `notify.h` | 63 | Toast notification interface (init, toast_info/success/error, cleanup) |
-| `notify.c` | 155 | Toast implementation (COM init, XML template builder, dual logging output) |
-| `config.h` | 139 | Configuration interface (backup_config struct, parse/extract/validate functions) |
-| `config.c` | 297 | Configuration implementation (.env parser, URL token/owner extraction, repo list parser) |
-| `network.h` | 140 | Network interface (HTTP GET, JSON parser, connectivity check, rate limit info) |
-| `network.c` | ~660 | Network implementation (WinHTTP session, API calls, zip streaming, JSON field extraction) |
-| `backup.h` | 105 | Backup interface (backup_result enum, single repo flow, atomic write, cycle orchestrator) |
-| `backup.c` | ~280 | Backup implementation (file verification, atomic write, per-repo flow, cycle loop) |
-| `main.c` | ~230 | Entry point (startup validation, main loop, sleep, graceful shutdown) |
+| `notify.c` | ~250 | Toast implementation (COM init, PowerShell bridge toast display, dual logging output) |
+| `config.h` | 161 | Configuration interface (backup_config struct, parse/extract/validate functions) |
+| `config.c` | ~500 | Configuration implementation (.env parser, URL token/owner extraction, repo list parser, verbose logging) |
+| `network.h` | 217 | Network interface (HTTP GET, JSON parser, connectivity check, rate limit info) |
+| `network.c` | ~1077 | Network implementation (WinHTTP session, API calls, zip streaming, JSON field extraction, rate limit retry) |
+| `backup.h` | 113 | Backup interface (backup_result enum, single repo flow, atomic write, cycle orchestrator) |
+| `backup.c` | ~405 | Backup implementation (file verification, atomic write, per-repo flow, cycle loop, verbose logging) |
+| `main.c` | ~610 | Entry point (arg parsing, COM init, mutex, log viewer, network init, main loop, shutdown) |
 
-**Total: 12 source files, ~2,800 lines of C.**
+**Total: 14 source files (7 .c, 7 .h), ~4,000 lines of C.**
 
 ## Compilation
 
@@ -47,7 +49,7 @@ All source files are in `src/`:
 
 ```powershell
 gcc -Wall -Wextra -O2 -static -o backup.exe `
-    src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c `
+    src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c src/console.c `
     -I src/ `
     -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE `
     -lwinhttp -lkernel32 -lshell32 -lole32 -lruntimeobject -lshlwapi
@@ -56,7 +58,7 @@ gcc -Wall -Wextra -O2 -static -o backup.exe `
 **One-liner (paste-safe for any terminal):**
 
 ```
-gcc -Wall -Wextra -O2 -static -o backup.exe src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c -I src/ -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE -lwinhttp -lkernel32 -lshell32 -lole32 -lruntimeobject -lshlwapi
+gcc -Wall -Wextra -O2 -static -o backup.exe src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c src/console.c -I src/ -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE -lwinhttp -lkernel32 -lshell32 -lole32 -lruntimeobject -lshlwapi
 ```
 
 > **Note:** `-D_WIN32_WINNT=0x0600` is required for `SHCreateDirectoryExA` to be
@@ -82,7 +84,9 @@ gcc -Wall -Wextra -O2 -static -o backup.exe src/main.c src/backup.c src/config.c
 | `-lole32` | Link Ole32 for COM initialization (CoInitializeEx). |
 | `-lruntimeobject` | Link RuntimeObject for Windows Runtime activation. |
 | `-lshlwapi` | Link ShLwApi for shell utility functions (PathCanonicalize, etc.). |
-| `-lshlobj` | Link ShlObj for directory creation functions. |
+
+> **Note:** `SHCreateDirectoryExA` (used for directory creation) is provided by
+> `-lshell32` on MinGW-w64. A separate `-lshlobj` flag is not needed.
 
 ### Static Build (Default)
 
@@ -93,7 +97,7 @@ but requires MinGW runtime DLLs at runtime).
 ```powershell
 # Dynamic build (smaller binary, requires MinGW DLLs)
 gcc -Wall -Wextra -O2 -o backup.exe `
-    src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c `
+    src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c src/console.c `
     -I src/ `
     -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE `
     -lwinhttp -lkernel32 -lshell32 -lole32 -lruntimeobject -lshlwapi
@@ -139,13 +143,13 @@ Three test files exist in `tests/`. Each tests a specific module:
 
 ```powershell
 # Config module tests
-gcc -Wall -Wextra -o test_config.exe tests/test_config.c src/config.c src/logger.c src/notify.c -I src/ -D_WIN32_WINNT=0x0600 -lshell32 -lole32 -lruntimeobject
+gcc -Wall -Wextra -o test_config.exe tests/test_config.c src/config.c src/logger.c src/notify.c src/console.c -I src/ -D_WIN32_WINNT=0x0600 -lshell32 -lole32 -lruntimeobject
 
 # Network module tests
-gcc -Wall -Wextra -o test_network.exe tests/test_network.c src/network.c src/logger.c src/notify.c -I src/ -D_WIN32_WINNT=0x0600 -lwinhttp -lshell32 -lole32 -lruntimeobject
+gcc -Wall -Wextra -o test_network.exe tests/test_network.c src/network.c src/logger.c src/notify.c src/console.c -I src/ -D_WIN32_WINNT=0x0600 -lwinhttp -lshell32 -lole32 -lruntimeobject
 
 # Backup module tests
-gcc -Wall -Wextra -o test_backup.exe tests/test_backup.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c -I src/ -D_WIN32_WINNT=0x0600 -lwinhttp -lshell32 -lole32 -lruntimeobject
+gcc -Wall -Wextra -o test_backup.exe tests/test_backup.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c src/console.c -I src/ -D_WIN32_WINNT=0x0600 -lwinhttp -lshell32 -lole32 -lruntimeobject
 ```
 
 ### Running Tests
