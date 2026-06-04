@@ -39,7 +39,8 @@ ghb/
 │   ├── build.md           # Build sequence (21 steps)
 │   ├── build-instructions.md  # Compilation and deployment guide
 │   ├── flow.md            # Data flow diagram
-│   └── nasm-notes.md      # C-to-NASM translation reference
+│   ├── nasm-notes.md      # C-to-NASM translation reference
+│   └── user-guide.md       # User-facing guide: modes, controls, configuration
 ├── dec/                   # Architecture decision records
 │   ├── 001.md             # Language choice (C, MinGW-w64)
 │   ├── 002.md             # HTTP library (WinHTTP)
@@ -98,6 +99,7 @@ All runtime configuration lives in the `.env` file (never committed to version c
 | `CYCLE_INTERVAL_SECONDS` | No | `3600` | Seconds between backup cycles |
 | `HTTP_TIMEOUT_MS` | No | `30000` | HTTP request timeout |
 | `CONNECTIVITY_CHECK_TIMEOUT_MS` | No | `5000` | Pre-cycle internet check timeout |
+| `SHUTDOWN_CHECK_INTERVAL_MS` | No | `1000` | Shutdown polling interval during sleep |
 | `LOG_MAX_SIZE_BYTES` | No | `1048576` | Log rotation threshold (1 MiB) |
 
 ## Design Highlights

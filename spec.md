@@ -80,7 +80,7 @@ REPOS=repo-one,repo-two,repo-three
 
 **Token rotation:** Since the token is either embedded in the URL or stored as a separate field, simply edit the `.env` file and replace the old token with a new one. No recompilation needed. The tool must gracefully handle an invalid/expired token (log the error and retry on the next cycle — do not crash or exit).
 
-**Additional configurable parameters:** The `.env` file also accepts five optional tuning parameters. These have sensible defaults that match the values stated throughout this specification. They only need to be set if the defaults are not suitable for a particular deployment. All changes take effect on the next cycle without recompilation. See `env.example` for the full list with documentation and usage guidance:
+**Additional configurable parameters:** The `.env` file also accepts optional tuning parameters. These have sensible defaults that match the values stated throughout this specification. They only need to be set if the defaults are not suitable for a particular deployment. All changes take effect on the next cycle without recompilation. See `env.example` for the full list with documentation and usage guidance:
 
 | Variable | Default | Spec Reference |
 |----------|---------|----------------|
@@ -88,7 +88,10 @@ REPOS=repo-one,repo-two,repo-three
 | `CYCLE_INTERVAL_SECONDS` | 3600 (1 hour) | Section 3 (cycle interval) |
 | `HTTP_TIMEOUT_MS` | 30000 (30 seconds) | Section 7 (network failure handling) |
 | `CONNECTIVITY_CHECK_TIMEOUT_MS` | 5000 (5 seconds) | Section 4 (connectivity check) |
+| `SHUTDOWN_CHECK_INTERVAL_MS` | 1000 (1 second) | Section 11 (shutdown polling interval) |
 | `LOG_MAX_SIZE_BYTES` | 1048576 (1 MiB) | Section 8 (log rotation) |
+
+**Every numeric value that controls runtime behavior** (timing intervals, timeouts, thresholds, directory paths) is configurable from the `.env` file. The only values that are not configurable are those that are intrinsic to the C language or the GitHub API protocol — HTTP status codes, API endpoint URLs, and stack-allocated buffer sizes. These compile-time constants are documented in `constants.h`. If a value affects how the tool behaves at runtime, it can be changed in `.env` without recompilation.
 
 **Constant architecture:** Values that are operator-configurable (deployment paths, timing, timeouts, log thresholds) live in `.env` and are read at runtime — no recompilation required. Values that are not operator-configurable (HTTP protocol status codes, GitHub API endpoints, buffer sizes required by the C compiler for stack allocation) are compile-time constants defined in `constants.h`. This split is documented in both `env.example` and `constants.h`.
 

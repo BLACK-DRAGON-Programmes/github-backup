@@ -104,8 +104,24 @@ static void show_toast_powershell(const char *title, const char *message) {
     /*
      * Write the PowerShell script.
      * Uses WinRT toast API via [Windows.UI.Notifications] types.
-     * The script loads the required assemblies, builds an XML template,
-     * creates a toast notification, and shows it via the notification manager.
+     *
+     * Critical requirements for desktop app toasts (researched):
+     *   1. AppUserModelID MUST be the pre-registered PowerShell AUMID.
+     *      A made-up string like 'GitHub Backup' causes SILENT failure —
+     *      no error, no notification. The PowerShell AUMID is guaranteed to
+     *      exist on all Windows 10/11 installations.
+     *   2. Template MUST be ToastGeneric. ToastText02 is deprecated and
+     *      may not render on newer Windows builds.
+     *   3. Audio silent="true" prevents the default notification sound.
+     *   4. Duration="short" gives auto-dismiss behavior matching spec.
+     *
+     * Implementation note: The XML is built using PowerShell single-quoted
+     * strings. Single-quoted strings in PowerShell treat all characters as
+     * literal — no escaping needed for double-quotes inside them. This avoids
+     * complex C escape sequences (\\\" \\\"  multi-line concatenation) that
+     * caused compilation errors in previous versions. The xml_escape function
+     * converts ' to &apos; so title/message never contain raw single quotes
+     * that would break the PowerShell string delimiters.
      */
     FILE *fp = fopen(ps1_path, "w");
     if (!fp) return;
@@ -115,13 +131,18 @@ static void show_toast_powershell(const char *title, const char *message) {
         "try {\n"
         "    [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null\n"
         "    [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null\n"
+        "    $APP_ID = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'\n"
         "    $xml = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
-        "    $xml.LoadXml('<toast><visual><binding template=\"ToastText02\">"
+        "    $toastXml = '<toast duration=\"short\">"
+        "<visual><binding template=\"ToastGeneric\">"
         "<text>%s</text>"
         "<text>%s</text>"
-        "</binding></visual></toast>')\n"
+        "</binding></visual>"
+        "<audio silent=\"true\"/></toast>'\n"
+        "    $xml.LoadXml($toastXml)\n"
         "    $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)\n"
-        "    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('GitHub Backup').Show($toast)\n"
+        "    $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($APP_ID)\n"
+        "    $notifier.Show($toast)\n"
         "} catch { }\n",
         safe_title, safe_message);
 
@@ -129,17 +150,18 @@ static void show_toast_powershell(const char *title, const char *message) {
 
     /*
      * Execute the script via CreateProcessW.
-     * - NoProfile: Skip user profile loading (fast startup)
-     * - WindowStyle Hidden: No console window flash
-     * - ExecutionPolicy Bypass: Allow unsigned scripts
-     * - CREATE_NO_WINDOW: No console allocation
-     *
-     * We do NOT wait for the process to complete — fire and forget.
-     * The toast will appear asynchronously within 1-2 seconds.
+     * - powershell.exe (5.1): WinRT types are pre-loaded. Do NOT use pwsh.exe.
+     * - NoProfile: Skip user profile loading (fast startup).
+     * - NonInteractive: Prevent interactive prompts that could hang.
+     * - ExecutionPolicy Bypass: Allow unsigned temp scripts.
+     * - WindowStyle Hidden: No console window flash.
+     * - CREATE_NEW_CONSOLE with SW_HIDE: Required for toast delivery.
+     *   CREATE_NO_WINDOW causes silent toast failure on some systems.
      */
     char cmd[MAX_PATH_BUF * 2];
     snprintf(cmd, sizeof(cmd),
-             "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"%s\"",
+             "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+             "-WindowStyle Hidden -File \"%s\"",
              ps1_path);
 
     STARTUPINFOW si;
@@ -160,7 +182,7 @@ static void show_toast_powershell(const char *title, const char *message) {
         NULL,           /* Process security attributes */
         NULL,           /* Thread security attributes */
         FALSE,          /* Inherit handles */
-        CREATE_NO_WINDOW, /* No console window */
+        CREATE_NEW_CONSOLE, /* Required: CREATE_NO_WINDOW causes silent toast failure */
         NULL,           /* Use parent's environment */
         NULL,           /* Use parent's working directory */
         &si,            /* Startup info */
@@ -169,18 +191,20 @@ static void show_toast_powershell(const char *title, const char *message) {
 
     if (created) {
         /*
-         * Close handles immediately — we don't need them.
-         * The process runs independently and exits after showing the toast.
+         * Wait for the PowerShell process to finish before deleting
+         * the temp script. Without waiting, there's a race condition where
+         * the C program deletes the .ps1 file before PowerShell reads it.
+         * 15-second timeout prevents hangs if PowerShell freezes.
          */
+        WaitForSingleObject(pi.hProcess, 15000);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     }
 
     /*
-     * Delete the temp script. If the PowerShell process hasn't read it yet
-     * (unlikely but possible on very slow systems), it will fail silently.
-     * In practice, CreateProcessW ensures the file is mapped before returning,
-     * and PowerShell opens it before the parent can delete it.
+     * Delete the temp script AFTER the PowerShell process has finished.
+     * This eliminates the race condition that existed when we deleted
+     * immediately after CreateProcessW.
      */
     remove(ps1_path);
 }

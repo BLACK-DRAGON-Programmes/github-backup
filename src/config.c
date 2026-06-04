@@ -199,6 +199,9 @@ void apply_defaults(backup_config *config) {
     if (config->log_max_size == 0) {
         config->log_max_size = 1048576;  /* 1 MiB */
     }
+    if (config->shutdown_check_interval == 0) {
+        config->shutdown_check_interval = DEFAULT_SHUTDOWN_CHECK_INTERVAL_MS;
+    }
 }
 
 
@@ -448,6 +451,8 @@ int parse_env_file(backup_config *config) {
             config->connectivity_timeout = atoi(value);
         } else if (strcmp(key, ENV_VAR_LOG_MAX_SIZE) == 0) {
             config->log_max_size = atol(value);
+        } else if (strcmp(key, ENV_VAR_SHUTDOWN_CHECK_INTERVAL) == 0) {
+            config->shutdown_check_interval = atoi(value);
         }
         /* Unknown keys are silently ignored — they may be from future .env versions */
     }

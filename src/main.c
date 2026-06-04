@@ -104,12 +104,12 @@ static void sigint_handler(int sig) {
 
 /**
  * Sleep for a specified number of seconds, checking the shutdown
- * event every SHUTDOWN_CHECK_INTERVAL_MS milliseconds.
- * Returns early if shutdown is requested.
+ * event at a configurable interval. Returns early if shutdown is requested.
  *
  * @param seconds  Number of seconds to sleep
+ * @param config   Backup config (for shutdown_check_interval)
  */
-static void sleep_with_shutdown_check(int seconds) {
+static void sleep_with_shutdown_check(int seconds, const backup_config *config) {
     if (seconds <= 0) return;
 
 #ifdef _WIN32
@@ -121,9 +121,10 @@ static void sleep_with_shutdown_check(int seconds) {
         if (g_shutdown_requested) return;
 
         if (g_shutdown_event != NULL) {
-            DWORD wait_ms = (remaining_ms < SHUTDOWN_CHECK_INTERVAL_MS)
+            DWORD interval_ms = (DWORD)config->shutdown_check_interval;
+            DWORD wait_ms = ((DWORD)remaining_ms < interval_ms)
                             ? (DWORD)remaining_ms
-                            : SHUTDOWN_CHECK_INTERVAL_MS;
+                            : interval_ms;
             DWORD result = WaitForSingleObject(g_shutdown_event, wait_ms);
             if (result == WAIT_OBJECT_0) {
                 g_shutdown_requested = 1;
@@ -258,7 +259,7 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
                       "No internet detected — cycle skipped");
             toast_info("No Internet",
                        "No internet detected — cycle skipped");
-            sleep_with_shutdown_check(config->cycle_interval);
+            sleep_with_shutdown_check(config->cycle_interval, config);
             continue;
         }
 
@@ -278,7 +279,7 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
                       "Failed to parse .env — skipping this cycle");
             toast_error("Config Error",
                         "Failed to parse .env — skipping this cycle");
-            sleep_with_shutdown_check(config->cycle_interval);
+            sleep_with_shutdown_check(config->cycle_interval, config);
             continue;
         }
 
@@ -288,7 +289,7 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
                       "Cannot create or access BACKUP_DIR — skipping this cycle");
             toast_error("Directory Error",
                         "Cannot create BACKUP_DIR — check permissions");
-            sleep_with_shutdown_check(config->cycle_interval);
+            sleep_with_shutdown_check(config->cycle_interval, config);
             continue;
         }
 
@@ -337,7 +338,7 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
          */
         log_event(LOG_INFO, "main", NULL, "SLEEP",
                   "Sleeping until next cycle");
-        sleep_with_shutdown_check(cycle_config.cycle_interval);
+        sleep_with_shutdown_check(cycle_config.cycle_interval, &cycle_config);
     }
 }
 

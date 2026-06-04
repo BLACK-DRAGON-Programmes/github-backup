@@ -421,8 +421,16 @@
 /** Named event for graceful shutdown signaling. */
 #define BACKUP_SHUTDOWN_EVENT_NAME "Global\\GitHubBackupShutdown"
 
-/** Polling interval (ms) for checking shutdown event during sleep. */
-#define SHUTDOWN_CHECK_INTERVAL_MS  1000
+/**
+ * Name of the .env variable containing the shutdown signal polling interval
+ * in milliseconds. During sleep, the main loop checks the shutdown event
+ * this frequently. Lower values = faster shutdown response but more CPU wakeups.
+ * Format: 1000 (for 1 second)
+ */
+#define ENV_VAR_SHUTDOWN_CHECK_INTERVAL  "SHUTDOWN_CHECK_INTERVAL_MS"
+
+/** Default polling interval (ms) for checking shutdown event during sleep. */
+#define DEFAULT_SHUTDOWN_CHECK_INTERVAL_MS  1000
 
 /** Maximum length of a formatted console log line. */
 #define MAX_CONSOLE_LINE_LEN        1024

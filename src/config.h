@@ -20,7 +20,7 @@
 
 /**
  * Runtime configuration struct. Populated by parse_env_file() from the
- * .env file. Contains all 7 variables defined in env.example.
+ * .env file. Contains all configurable variables defined in env.example.
  */
 typedef struct {
     /* Raw values from .env */
@@ -39,11 +39,12 @@ typedef struct {
     int  http_timeout;                    /* HTTP_TIMEOUT_MS */
     int  connectivity_timeout;            /* CONNECTIVITY_CHECK_TIMEOUT_MS */
     long log_max_size;                    /* LOG_MAX_SIZE_BYTES */
+    int  shutdown_check_interval;       /* SHUTDOWN_CHECK_INTERVAL_MS */
 } backup_config;
 
 
 /**
- * Parse the .env file and populate the config struct. Reads all 7
+ * Parse the .env file and populate the config struct. Reads all
  * variables, extracts token and owner from GITHUB_BASE_URL, parses
  * the REPOS list. Missing configurable values get defaults (documented
  * in env.example). Missing mandatory values (GITHUB_BASE_URL, REPOS)
