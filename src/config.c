@@ -1,17 +1,17 @@
 /**
- * config.c — Configuration implementation for the GitHub Backup Script.
+ * config.c - Configuration implementation for the GitHub Backup Script.
  *
  * Reads and parses the .env file line by line, extracting key-value
  * pairs. Handles whitespace trimming, comment skipping, and default
  * values for optional parameters.
  *
- * The parser is intentionally simple — no regex, no external libraries.
+ * The parser is intentionally simple - no regex, no external libraries.
  * It scans for "KEY=VALUE" patterns and matches against known env
  * variable names from constants.h.
  */
 
 /*
- * Target Windows Vista or later — required for SHCreateDirectoryExA to be
+ * Target Windows Vista or later - required for SHCreateDirectoryExA to be
  * declared in <shlobj.h>. Without these macros, MinGW-w64 defaults to an
  * older NTDDI version that hides the function prototype.
  */
@@ -210,13 +210,13 @@ void apply_defaults(backup_config *config) {
 void build_env_path(const char *exe_dir, char *path_out) {
     /*
      * Build .env path from the executable's directory.
-     * The .env file sits next to the exe — not in BACKUP_DIR.
+     * The .env file sits next to the exe - not in BACKUP_DIR.
      */
     size_t dir_len = strlen(exe_dir);
     if (dir_len + 4 >= MAX_URL_LEN) {  /* 4 = strlen(".env") */
         char detail[MAX_URL_LEN];
         snprintf(detail, sizeof(detail),
-                 "Exe directory path too long (%zu chars) — cannot build .env path "
+                 "Exe directory path too long (%zu chars) - cannot build .env path "
                  "(max %d chars). Move the executable to a shorter path.",
                  dir_len, MAX_URL_LEN - 5);
         log_error("config", NULL, detail);
@@ -236,7 +236,7 @@ void build_log_path(const char *backup_dir, char *path_out) {
     if (dir_len + 10 >= MAX_URL_LEN) {  /* 10 = strlen("backup.log") */
         char detail[MAX_URL_LEN];
         snprintf(detail, sizeof(detail),
-                 "BACKUP_DIR too long (%zu chars) — cannot build log path "
+                 "BACKUP_DIR too long (%zu chars) - cannot build log path "
                  "(max %d chars). Shorten BACKUP_DIR in .env.",
                  dir_len, MAX_URL_LEN - 11);
         log_error("config", NULL, detail);
@@ -324,7 +324,7 @@ int parse_repos(const char *repos_raw,
     while (token != NULL) {
         if (*count >= MAX_REPOS) {
             log_error("config", NULL,
-                      "Repo count exceeds MAX_REPOS — increase constant and recompile");
+                      "Repo count exceeds MAX_REPOS - increase constant and recompile");
             return -1;
         }
 
@@ -362,12 +362,12 @@ int validate_config(const backup_config *config) {
     }
     if (config->token[0] == '\0') {
         log_error("config", NULL, "Could not extract token from GITHUB_BASE_URL");
-        toast_error("Config Error", "Invalid GITHUB_BASE_URL format — token not found");
+        toast_error("Config Error", "Invalid GITHUB_BASE_URL format - token not found");
         return -1;
     }
     if (config->owner[0] == '\0') {
         log_error("config", NULL, "Could not extract owner from GITHUB_BASE_URL");
-        toast_error("Config Error", "Invalid GITHUB_BASE_URL format — owner not found");
+        toast_error("Config Error", "Invalid GITHUB_BASE_URL format - owner not found");
         return -1;
     }
     return 0;
@@ -388,7 +388,7 @@ int parse_env_file(backup_config *config) {
     if (config->backup_dir[0] != '\0') {
         build_env_path(config->backup_dir, env_path);
     } else {
-        log_error("config", NULL, "Cannot locate .env — exe directory not set");
+        log_error("config", NULL, "Cannot locate .env - exe directory not set");
         return -1;
     }
 
@@ -399,7 +399,7 @@ int parse_env_file(backup_config *config) {
         return -1;
     }
 
-    /* Preserve exe_dir across the memset — save it, restore after */
+    /* Preserve exe_dir across the memset - save it, restore after */
     char exe_dir[MAX_URL_LEN];
     snprintf(exe_dir, sizeof(exe_dir), "%s", config->backup_dir);
 
@@ -415,7 +415,7 @@ int parse_env_file(backup_config *config) {
         /* Find the '=' separator */
         char *eq = strchr(line, '=');
         if (eq == NULL) {
-            continue;  /* Malformed line — skip */
+            continue;  /* Malformed line - skip */
         }
 
         *eq = '\0';
@@ -428,12 +428,12 @@ int parse_env_file(backup_config *config) {
                      "%s", value);
             fprintf(stderr, "[DBG] config: Parsed %s (len=%zu)\n", key, strlen(value));
         } else if (strcmp(key, ENV_VAR_GITHUB_TOKEN) == 0) {
-            /* Standalone token — takes precedence over URL-embedded token */
+            /* Standalone token - takes precedence over URL-embedded token */
             snprintf(config->token, sizeof(config->token),
                      "%s", value);
             fprintf(stderr, "[DBG] config: Parsed %s (len=%zu)\n", key, strlen(value));
         } else if (strcmp(key, ENV_VAR_GITHUB_OWNER) == 0) {
-            /* Standalone owner — used with GITHUB_TOKEN when base_url is absent */
+            /* Standalone owner - used with GITHUB_TOKEN when base_url is absent */
             snprintf(config->owner, sizeof(config->owner),
                      "%s", value);
             fprintf(stderr, "[DBG] config: Parsed %s = '%s'\n", key, value);
@@ -454,7 +454,7 @@ int parse_env_file(backup_config *config) {
         } else if (strcmp(key, ENV_VAR_SHUTDOWN_CHECK_INTERVAL) == 0) {
             config->shutdown_check_interval = atoi(value);
         }
-        /* Unknown keys are silently ignored — they may be from future .env versions */
+        /* Unknown keys are silently ignored - they may be from future .env versions */
     }
 
     fclose(fp);
@@ -492,7 +492,7 @@ int parse_env_file(backup_config *config) {
     log_event(LOG_INFO, "config", NULL, "OK",
               "Loaded configuration from .env");
 
-    fprintf(stderr, "[DBG] config: Loaded — %d repos, owner='%s', backup_dir='%s'\n",
+    fprintf(stderr, "[DBG] config: Loaded - %d repos, owner='%s', backup_dir='%s'\n",
             config->repo_count, config->owner, config->backup_dir);
     for (int i = 0; i < config->repo_count; i++) {
         fprintf(stderr, "[DBG] config:   repo[%d] = '%s'\n", i, config->repos[i]);

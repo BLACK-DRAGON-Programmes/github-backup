@@ -1,11 +1,11 @@
 /**
- * backup.h — Backup orchestration interface for the GitHub Backup Script.
+ * backup.h - Backup orchestration interface for the GitHub Backup Script.
  *
  * Provides the per-repo backup flow (branch resolution, download,
  * verification, atomic write) and the full cycle orchestrator that
  * iterates over all repos in the configuration.
  *
- * This is the highest-level domain module — it ties together config
+ * This is the highest-level domain module - it ties together config
  * (repo list), network (API calls), logger (event recording), and
  * notify (user feedback). Only main.c depends on this module.
  *
@@ -31,13 +31,13 @@
  */
 typedef enum {
     BACKUP_OK,               /* Backup completed successfully */
-    BACKUP_NOT_FOUND,        /* Repository returned 404 — skip */
-    BACKUP_AUTH_ERROR,       /* Token invalid/expired — skip */
-    BACKUP_NETWORK_ERROR,   /* Network failure — skip */
-    BACKUP_VERIFY_FAILED,    /* Download corrupt — old backup intact */
-    BACKUP_DISK_FULL,        /* Disk full — stop cycle */
-    BACKUP_RATE_LIMITED,     /* Rate limited — sleep until reset */
-    BACKUP_RATE_LIMIT_RETRY, /* Rate limited — retry succeeded after wait */
+    BACKUP_NOT_FOUND,        /* Repository returned 404 - skip */
+    BACKUP_AUTH_ERROR,       /* Token invalid/expired - skip */
+    BACKUP_NETWORK_ERROR,   /* Network failure - skip */
+    BACKUP_VERIFY_FAILED,    /* Download corrupt - old backup intact */
+    BACKUP_DISK_FULL,        /* Disk full - stop cycle */
+    BACKUP_RATE_LIMITED,     /* Rate limited - sleep until reset */
+    BACKUP_RATE_LIMIT_RETRY, /* Rate limited - retry succeeded after wait */
     BACKUP_UNKNOWN_ERROR     /* Unclassified error */
 } backup_result;
 

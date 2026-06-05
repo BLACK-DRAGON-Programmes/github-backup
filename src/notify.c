@@ -1,5 +1,5 @@
 /**
- * notify.c — Windows toast notification implementation.
+ * notify.c - Windows toast notification implementation.
  *
  * Uses a PowerShell bridge to display actual Windows toast notifications
  * from C code. The Windows Runtime toast API requires C++ WRL headers
@@ -14,7 +14,7 @@
  * Toast click interaction (Spec Section 9):
  *   Clicking a toast notification launches backup.exe with no flags.
  *   Since the daemon is always running when toasts are fired, the mutex
- *   already exists and the new process enters viewer mode — the user
+ *   already exists and the new process enters viewer mode - the user
  *   sees a live log tail of backup activity.
  *
  * Implementation: The PowerShell script registers an Activated event
@@ -74,7 +74,7 @@ static void xml_escape(const char *in, char *out, int max_len) {
  *
  * Writes a temporary .ps1 file that uses the WinRT toast API to display
  * a notification with an Activated event handler, then executes it via
- * CreateProcessW with CREATE_NO_WINDOW. The process runs asynchronously —
+ * CreateProcessW with CREATE_NO_WINDOW. The process runs asynchronously -
  * we fire and forget without waiting.
  *
  * The temp .ps1 file is cleaned up after the process completes.
@@ -112,6 +112,8 @@ static void show_toast_powershell(const char *title, const char *message) {
         return;
     }
 
+    /* snprintf truncation is safe - temp paths from GetTempPathA
+     * are always shorter than MAX_PATH_BUF. */
     snprintf(ps1_path, sizeof(ps1_path),
              "%sghb-toast-%lu.ps1",
              temp_dir, (unsigned long)GetCurrentProcessId());
@@ -129,7 +131,7 @@ static void show_toast_powershell(const char *title, const char *message) {
     /*
      * Escape the exe path for PowerShell single-quoted strings.
      * Single-quoted strings treat everything as literal EXCEPT single
-     * quotes themselves — those must be doubled ('').
+     * quotes themselves - those must be doubled ('').
      */
     char ps_exe_path[MAX_PATH_BUF];
     int j = 0;
@@ -285,7 +287,7 @@ int notify_init(void) {
 
 
 void toast_info(const char *title, const char *message) {
-    fprintf(stderr, "[DBG] notify: [INFO]  '%s' — '%s'\n", title, message);
+    fprintf(stderr, "[DBG] notify: [INFO]  '%s' - '%s'\n", title, message);
     log_event(LOG_INFO, "toast", NULL, "INFO", message);
     #ifdef _WIN32
     show_toast_powershell(title, message);
@@ -294,7 +296,7 @@ void toast_info(const char *title, const char *message) {
 
 
 void toast_success(const char *repo, const char *message) {
-    fprintf(stderr, "[DBG] notify: [OK]     '%s' — '%s'\n", repo, message);
+    fprintf(stderr, "[DBG] notify: [OK]     '%s' - '%s'\n", repo, message);
     log_event(LOG_SUCCESS, "toast", repo, "OK", message);
     #ifdef _WIN32
     char title[512];
@@ -305,7 +307,7 @@ void toast_success(const char *repo, const char *message) {
 
 
 void toast_error(const char *title, const char *message) {
-    fprintf(stderr, "[DBG] notify: [ERROR] '%s' — '%s'\n", title, message);
+    fprintf(stderr, "[DBG] notify: [ERROR] '%s' - '%s'\n", title, message);
     log_event(LOG_ERROR, "toast", NULL, "FAILED", message);
     #ifdef _WIN32
     show_toast_powershell(title, message);
@@ -315,7 +317,7 @@ void toast_error(const char *title, const char *message) {
 
 void notify_cleanup(void) {
     if (g_com_initialized) {
-        fprintf(stderr, "[DBG] notify: Cleanup — CoUninitialize\n");
+        fprintf(stderr, "[DBG] notify: Cleanup - CoUninitialize\n");
         CoUninitialize();
         g_com_initialized = 0;
     }

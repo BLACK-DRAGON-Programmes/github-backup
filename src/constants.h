@@ -1,5 +1,5 @@
 /**
- * constants.h — Compile-time constants for the GitHub Backup Script.
+ * constants.h - Compile-time constants for the GitHub Backup Script.
  *
  * This header is the root of the dependency tree. Every source module
  * includes this file for buffer sizes, HTTP status codes, API endpoints,
@@ -9,13 +9,13 @@
  *
  * Constants are divided into two categories:
  *
- *   1. CONFIGURABLE values — stored in .env, read at runtime by the
+ *   1. CONFIGURABLE values - stored in .env, read at runtime by the
  *      config module. Changes take effect on the next cycle without
  *      recompilation. These are NOT defined here. See env.example for
  *      the full list: BACKUP_DIR, CYCLE_INTERVAL_SECONDS, HTTP_TIMEOUT_MS,
  *      CONNECTIVITY_CHECK_TIMEOUT_MS, LOG_MAX_SIZE_BYTES.
  *
- *   2. NON-CONFIGURABLE values — defined here as preprocessor constants.
+ *   2. NON-CONFIGURABLE values - defined here as preprocessor constants.
  *      These are protocol definitions (HTTP status codes, API URLs),
  *      compile-time constraints (buffer sizes, array bounds), interface
  *      contracts (env variable names, JSON field names), and internal
@@ -23,9 +23,9 @@
  *      runtime because they are either fixed by external standards or
  *      required by the C compiler for stack allocation.
  *
- * Coding Standard #10: No raw numbers in code — every numeric value is
+ * Coding Standard #10: No raw numbers in code - every numeric value is
  *   defined here as a named constant with a comment explaining its purpose.
- * Coding Standard #38: No magic strings — concept-representing string
+ * Coding Standard #38: No magic strings - concept-representing string
  *   literals are defined here as named constants.
  */
 
@@ -41,7 +41,7 @@
  * file, verify integrity, then rename to the final .zip path.
  *
  * These are internal implementation details of the atomic write
- * mechanism — not operator-configurable.
+ * mechanism - not operator-configurable.
  * ================================================================ */
 
 /**
@@ -56,7 +56,7 @@
 
 /**
  * Suffix appended to a repository name to form the final backup archive
- * path. Only one file per repo exists at any time — no timestamped
+ * path. Only one file per repo exists at any time - no timestamped
  * copies, no accumulation.
  * Spec Section 1: "Each repository is downloaded as a zip archive and
  * stored in D:\BACKUP\<repo-name>.zip"
@@ -71,7 +71,7 @@
  * checks and GitHub API communication.
  *
  * These are fixed by the GitHub API contract and the HTTP specification.
- * They are not operator-configurable — changing them would point the
+ * They are not operator-configurable - changing them would point the
  * script at a different service or break the API protocol.
  * ================================================================ */
 
@@ -79,7 +79,7 @@
  * URL used for the pre-cycle internet connectivity check. The script
  * sends a lightweight HTTP request to this URL before each cycle.
  *
- * Rationale: Using github.com directly — it is lightweight, relevant
+ * Rationale: Using github.com directly - it is lightweight, relevant
  * to the script's purpose, and more reliable than a dedicated health-
  * check endpoint that could itself become unavailable.
  * Spec Section 4: "a basic HTTP request or DNS resolution test"
@@ -156,7 +156,7 @@
  * limits for all string operations.
  *
  * These are compile-time constraints. C requires stack-allocated arrays
- * to have sizes known at compile time — they cannot be runtime values
+ * to have sizes known at compile time - they cannot be runtime values
  * read from a configuration file. The eventual NASM translation also
  * requires all buffer sizes to be assembly-time constants.
  * ================================================================ */
@@ -226,7 +226,7 @@
 
 /**
  * Maximum number of repositories that can be listed in the REPOS
- * variable in .env. This is a compile-time array allocation bound —
+ * variable in .env. This is a compile-time array allocation bound -
  * the repo list is stored as a fixed-size C array, and C requires
  * array sizes to be known at compile time.
  *
@@ -250,18 +250,18 @@
  * raw numbers per Coding Standard #10.
  *
  * These are defined by the HTTP specification (RFC 9110). They are
- * not operator-configurable — they are facts about the protocol.
+ * not operator-configurable - they are facts about the protocol.
  * ================================================================ */
 
 /**
- * HTTP 200 OK — the API request succeeded.
+ * HTTP 200 OK - the API request succeeded.
  * Expected for successful repo metadata queries and zip downloads.
  */
 #define HTTP_OK                       200
 
 
 /**
- * HTTP 401 Unauthorized — the token is missing, invalid, or expired.
+ * HTTP 401 Unauthorized - the token is missing, invalid, or expired.
  * Spec Section 7: "Invalid/expired token: Log the error, fire a
  * toast, do not crash. Retry on the next hourly cycle."
  */
@@ -269,14 +269,14 @@
 
 
 /**
- * HTTP 403 Forbidden — the token exists but lacks the required
+ * HTTP 403 Forbidden - the token exists but lacks the required
  * permission scope (typically missing 'repo' scope).
  */
 #define HTTP_FORBIDDEN                403
 
 
 /**
- * HTTP 404 Not Found — the repository does not exist or the token
+ * HTTP 404 Not Found - the repository does not exist or the token
  * lacks access to the private repository.
  * Spec Section 5g: "If the repository does not exist or returns 404,
  * log a warning, fire a toast, and skip."
@@ -285,7 +285,7 @@
 
 
 /**
- * HTTP 429 Too Many Requests — the GitHub API rate limit has been
+ * HTTP 429 Too Many Requests - the GitHub API rate limit has been
  * exceeded. The script must read X-RateLimit-Reset and sleep until
  * the window resets before retrying.
  * Spec Section 7: "If rate-limited, log, fire a toast, sleep until
@@ -299,10 +299,10 @@
  *
  * Names of the .env variables that the config module parses. Using
  * named constants ensures consistency between the env.example template
- * and the parser code — a typo in either place is caught at compile
+ * and the parser code - a typo in either place is caught at compile
  * time rather than silently producing a runtime misconfiguration.
  *
- * This section contains ALL .env variable names — both the original
+ * This section contains ALL .env variable names - both the original
  * two (GITHUB_BASE_URL, REPOS) and the five configurable runtime
  * values (BACKUP_DIR, CYCLE_INTERVAL_SECONDS, HTTP_TIMEOUT_MS,
  * CONNECTIVITY_CHECK_TIMEOUT_MS, LOG_MAX_SIZE_BYTES).
@@ -393,7 +393,7 @@
  *
  * Keys used when parsing JSON responses from the GitHub API.
  * Coding Standard #38: Concept-representing string literals must be
- * named constants — these are part of the GitHub API contract.
+ * named constants - these are part of the GitHub API contract.
  * ================================================================ */
 
 /**

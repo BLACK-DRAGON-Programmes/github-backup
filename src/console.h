@@ -1,5 +1,5 @@
 /**
- * console.h — Console output interface for the GitHub Backup Script.
+ * console.h - Console output interface for the GitHub Backup Script.
  *
  * Provides ANSI color-coded, column-aligned console output for
  * viewer mode (Section 8b of spec). On Windows 10+, ANSI escape
@@ -11,9 +11,9 @@
  * supports 'q' to signal daemon shutdown (Section 11a).
  *
  * Viewer controls:
- *   q       — Signal daemon shutdown (Section 11a)
- *   Ctrl+C  — Close viewer only (Section 11c)
- *   Close   — Close viewer only (Section 11c)
+ *   q       - Signal daemon shutdown (Section 11a)
+ *   Ctrl+C  - Close viewer only (Section 11c)
+ *   Close   - Close viewer only (Section 11c)
  */
 
 #ifndef CONSOLE_H
@@ -25,7 +25,7 @@
  * Initialize the console for ANSI output.
  * Enables ENABLE_VIRTUAL_TERMINAL_PROCESSING on the stdout handle.
  * Must be called once before any console output in viewer mode.
- * Safe to call even if there's no console — it just fails silently.
+ * Safe to call even if there's no console - it just fails silently.
  */
 int console_init(void);
 

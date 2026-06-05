@@ -1,7 +1,7 @@
 /**
- * notify.h — Windows toast notification interface.
+ * notify.h - Windows toast notification interface.
  *
- * Fires Windows toast notifications for every runtime event — success,
+ * Fires Windows toast notifications for every runtime event - success,
  * failure, connectivity, rate limiting, cycle start/complete. Toasts are
  * the primary user-visible feedback mechanism in daemon mode (the daemon
  * has no console).
@@ -10,7 +10,7 @@
  *   Every toast registers an Activated event handler. When the user clicks
  *   a toast notification, the handler launches backup.exe with no flags.
  *   Since the daemon is always running when toasts fire, the mutex already
- *   exists and the new process enters viewer mode — the user sees a live
+ *   exists and the new process enters viewer mode - the user sees a live
  *   log tail of backup activity.
  *
  * Toast events are also logged via the logger module (dual output per

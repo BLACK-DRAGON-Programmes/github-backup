@@ -1,5 +1,5 @@
 /**
- * config.h — Configuration interface for the GitHub Backup Script.
+ * config.h - Configuration interface for the GitHub Backup Script.
  *
  * Reads the .env file and populates a config struct with all runtime
  * parameters. Parses GITHUB_BASE_URL to extract the authentication
@@ -24,8 +24,8 @@
  */
 typedef struct {
     /* Raw values from .env */
-    char base_url[MAX_URL_LEN];           /* GITHUB_BASE_URL — token + owner URL */
-    char repos_raw[MAX_URL_LEN];         /* REPOS — raw comma-separated string */
+    char base_url[MAX_URL_LEN];           /* GITHUB_BASE_URL - token + owner URL */
+    char repos_raw[MAX_URL_LEN];         /* REPOS - raw comma-separated string */
 
     /* Parsed values */
     char token[MAX_TOKEN_LEN];           /* Extracted from base_url authority */
@@ -34,7 +34,7 @@ typedef struct {
     int  repo_count;                      /* Number of repos in the array */
 
     /* Configurable runtime values (with defaults) */
-    char backup_dir[MAX_URL_LEN];         /* BACKUP_DIR — deployment directory */
+    char backup_dir[MAX_URL_LEN];         /* BACKUP_DIR - deployment directory */
     int  cycle_interval;                  /* CYCLE_INTERVAL_SECONDS */
     int  http_timeout;                    /* HTTP_TIMEOUT_MS */
     int  connectivity_timeout;            /* CONNECTIVITY_CHECK_TIMEOUT_MS */

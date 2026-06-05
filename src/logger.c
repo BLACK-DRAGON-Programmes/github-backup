@@ -1,5 +1,5 @@
 /**
- * logger.c — Logging implementation for the GitHub Backup Script.
+ * logger.c - Logging implementation for the GitHub Backup Script.
  *
  * Writes structured log entries to an append-only file. Each entry
  * follows the format:

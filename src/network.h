@@ -1,11 +1,11 @@
 /**
- * network.h — Network interface for the GitHub Backup Script.
+ * network.h - Network interface for the GitHub Backup Script.
  *
  * Handles all HTTP communication with the GitHub API. Uses WinHTTP on
  * Windows for HTTP requests, with platform stubs for compilation testing
  * on non-Windows environments.
  *
- * The network module is a pure I/O layer — it receives token, owner, and
+ * The network module is a pure I/O layer - it receives token, owner, and
  * repo name as function parameters and does not read the .env file
  * directly. This keeps the module decoupled from configuration.
  *
@@ -33,7 +33,7 @@
  * Rationale: GitHub API JSON responses for single repo metadata are
  * typically 1-5KB. A limit of 65536 bytes (64KB) provides generous
  * headroom for unusually large responses without excessive stack use.
- * Zip downloads bypass this buffer — they stream directly to disk.
+ * Zip downloads bypass this buffer - they stream directly to disk.
  */
 #define MAX_HTTP_RESPONSE_LEN         65536
 
@@ -68,8 +68,8 @@
  * handling decisions (sleep until reset window when rate-limited).
  *
  * The two relevant GitHub API headers are:
- *   X-RateLimit-Remaining — integer, requests left in current window
- *   X-RateLimit-Reset — integer, Unix timestamp when window resets
+ *   X-RateLimit-Remaining - integer, requests left in current window
+ *   X-RateLimit-Reset - integer, Unix timestamp when window resets
  */
 typedef struct {
     int remaining;      /* X-RateLimit-Remaining: requests left in current window */
@@ -98,7 +98,7 @@ int network_init(void);
  * Check internet connectivity by attempting to connect to the
  * host defined in CONNECTIVITY_CHECK_URL.
  *
- * This is a lightweight probe — it verifies DNS resolution and TCP
+ * This is a lightweight probe - it verifies DNS resolution and TCP
  * connection, not full HTTP request/response. Used before each backup
  * cycle to decide whether to proceed or skip.
  *
@@ -133,7 +133,7 @@ int http_get(const char *url, const char *token,
 
 /**
  * Extract a string field value from a JSON response body.
- * Simple key-value parser — no external JSON library. Finds the first
+ * Simple key-value parser - no external JSON library. Finds the first
  * occurrence of "key" followed by ":" and extracts the quoted string value.
  *
  * This parser handles flat JSON objects as returned by the GitHub API

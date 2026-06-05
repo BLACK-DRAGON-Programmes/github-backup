@@ -1,5 +1,5 @@
 /**
- * logger.h — Logging interface for the GitHub Backup Script.
+ * logger.h - Logging interface for the GitHub Backup Script.
  *
  * Provides structured log entries with timestamp, action, repository name,
  * status, and optional detail. The logger writes to a single append-only
@@ -21,10 +21,10 @@
  * the nature of the event being recorded.
  */
 typedef enum {
-    LOG_INFO,    /* Informational event — cycle start, cycle complete */
-    LOG_SUCCESS, /* Successful operation — repo backed up */
-    LOG_WARNING, /* Non-fatal issue — repo 404, connectivity check failed */
-    LOG_ERROR    /* Fatal or blocking error — corrupt .env, disk full */
+    LOG_INFO,    /* Informational event - cycle start, cycle complete */
+    LOG_SUCCESS, /* Successful operation - repo backed up */
+    LOG_WARNING, /* Non-fatal issue - repo 404, connectivity check failed */
+    LOG_ERROR    /* Fatal or blocking error - corrupt .env, disk full */
 } log_level;
 
 

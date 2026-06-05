@@ -1,18 +1,18 @@
 /**
- * backup.c — Backup orchestration implementation for the GitHub Backup Script.
+ * backup.c - Backup orchestration implementation for the GitHub Backup Script.
  *
  * Implements the per-repo backup flow and the full cycle orchestrator.
  * Each function does exactly one thing (Coding Standard #18):
  *
- *   verify_downloaded_file — checks file integrity on disk
- *   cleanup_temp_file     — removes a failed download
- *   atomic_write          — swaps temp file for final file
- *   backup_single_repo    — full per-repo flow
- *   run_backup_cycle      — iterates all repos
+ *   verify_downloaded_file - checks file integrity on disk
+ *   cleanup_temp_file     - removes a failed download
+ *   atomic_write          - swaps temp file for final file
+ *   backup_single_repo    - full per-repo flow
+ *   run_backup_cycle      - iterates all repos
  *
  * The backup module consumes config (for repo list and paths), network
  * (for API calls), logger (for event recording), and notify (for
- * toasts). It does not read .env directly — it receives a populated
+ * toasts). It does not read .env directly - it receives a populated
  * backup_config struct from the caller.
  */
 
@@ -46,7 +46,7 @@
  * @param repo       Repo name (for error logging)
  * @return 0 if path fits, -1 if it would overflow
  */
-/* MAX_PATH_BUF is defined in constants.h — used by validate_path_length
+/* MAX_PATH_BUF is defined in constants.h - used by validate_path_length
  * and the stack buffers below. */
 
 static int validate_path_length(size_t dir_len, size_t name_len,
@@ -55,7 +55,7 @@ static int validate_path_length(size_t dir_len, size_t name_len,
         char detail[MAX_URL_LEN];
         snprintf(detail, sizeof(detail),
                  "Path too long: backup_dir (%zu) + repo name (%zu) "
-                 "exceeds MAX_PATH_BUF (%d) — shorten BACKUP_DIR in .env",
+                 "exceeds MAX_PATH_BUF (%d) - shorten BACKUP_DIR in .env",
                  dir_len, name_len, MAX_PATH_BUF);
         log_error("backup", repo, detail);
         toast_error("Path Too Long",
@@ -129,7 +129,7 @@ void cleanup_temp_file(const char *temp_path) {
                   "Temporary file deleted");
     } else {
         log_error("backup", NULL,
-                  "Failed to delete temporary file — may need manual cleanup");
+                  "Failed to delete temporary file - may need manual cleanup");
     }
 }
 
@@ -141,28 +141,28 @@ int atomic_write(const char *temp_path, const char *final_path) {
 
     /*
      * Step 1: Delete the old backup file if it exists.
-     * This must happen before rename — on Windows, rename will fail
+     * This must happen before rename - on Windows, rename will fail
      * if the destination file already exists.
      */
     if (remove(final_path) != 0) {
         /*
          * remove() returns non-zero if the file doesn't exist.
-         * That's fine — it means there's no old backup to replace.
+         * That's fine - it means there's no old backup to replace.
          * Only log an error if the file exists but can't be deleted.
          */
         FILE *check = fopen(final_path, "rb");
         if (check != NULL) {
             fclose(check);
             log_error("backup", NULL,
-                      "Cannot delete old backup file — permission denied or file locked");
+                      "Cannot delete old backup file - permission denied or file locked");
             return -1;
         }
-        /* File doesn't exist — no deletion needed, proceed */
+        /* File doesn't exist - no deletion needed, proceed */
     }
 
     /*
      * Step 2: Rename the temporary file to the final path.
-     * This is the atomic swap — the file either renames completely
+     * This is the atomic swap - the file either renames completely
      * or not at all. No half-state is possible.
      */
     if (rename(temp_path, final_path) != 0) {
@@ -233,10 +233,10 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     }
 
     snprintf(detail, sizeof(detail),
-             "Default branch: %s — downloading zip archive", branch);
+             "Default branch: %s - downloading zip archive", branch);
     log_event(LOG_INFO, "backup", repo, "OK", detail);
 
-    fprintf(stderr, "[DBG] backup: Branch='%s' — constructing paths...\n", branch);
+    fprintf(stderr, "[DBG] backup: Branch='%s' - constructing paths...\n", branch);
     fflush(stderr);
 
     /*
@@ -245,7 +245,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
      * final_path: where the verified download ends up (.zip).
      *
      * Fail-fast: if backup_dir + repo + suffix exceeds MAX_URL_LEN,
-     * the path would be silently truncated by snprintf — the download
+     * the path would be silently truncated by snprintf - the download
      * would go to the wrong location. Catch this early with a loud
      * error (Coding Standard #34: Fail-Fast on Startup).
      */
@@ -257,6 +257,8 @@ backup_result backup_single_repo(const char *owner, const char *repo,
         return BACKUP_UNKNOWN_ERROR;
     }
 
+    /* Path length already validated by validate_path_length() above.
+     * snprintf truncation is safe and intentional as a last resort. */
     snprintf(temp_path, sizeof(temp_path), "%s%s%s",
              config->backup_dir, repo, TEMP_FILE_SUFFIX);
 
@@ -270,7 +272,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
 
     /*
      * Step 3: Download the zip archive to the temporary file.
-     * The download streams directly to disk — no memory buffering.
+     * The download streams directly to disk - no memory buffering.
      */
 
     fprintf(stderr, "[DBG] backup: Downloading zip to %s\n", temp_path);
@@ -302,14 +304,14 @@ backup_result backup_single_repo(const char *owner, const char *repo,
 
     if (verify_downloaded_file(temp_path) != 0) {
         log_error("backup", repo,
-                  "Downloaded file verification failed — corrupt or empty");
+                  "Downloaded file verification failed - corrupt or empty");
         toast_error("Download Corrupt", repo);
         cleanup_temp_file(temp_path);
         return BACKUP_VERIFY_FAILED;
     }
 
     /*
-     * Step 5: Atomic write — delete old backup, rename new.
+     * Step 5: Atomic write - delete old backup, rename new.
      * At no point does the repo have zero valid backups.
      */
 
@@ -319,12 +321,12 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     if (atomic_write(temp_path, final_path) != 0) {
         /*
          * Rename failed. The temp file still exists.
-         * Keep it — the old backup (if any) is also intact.
+         * Keep it - the old backup (if any) is also intact.
          * Log the error but don't consider this a total failure
          * since the download itself was successful.
          */
         log_error("backup", repo,
-                  "Atomic write failed — temp file preserved for manual recovery");
+                  "Atomic write failed - temp file preserved for manual recovery");
         toast_error("Write Failed", repo);
         return BACKUP_UNKNOWN_ERROR;
     }
@@ -352,7 +354,7 @@ int run_backup_cycle(const backup_config *config,
     *succeeded = 0;
     *failed = 0;
 
-    fprintf(stderr, "[DBG] backup: === CYCLE START — %d repos ===\n", config->repo_count);
+    fprintf(stderr, "[DBG] backup: === CYCLE START - %d repos ===\n", config->repo_count);
     fflush(stderr);
 
     int cycle_aborted = 0;
@@ -400,7 +402,7 @@ int run_backup_cycle(const backup_config *config,
          */
         if (cycle_aborted) {
             log_event(LOG_ERROR, "backup", NULL, "ABORTED",
-                      "Cycle aborted — disk full or critical error");
+                      "Cycle aborted - disk full or critical error");
             toast_error("Cycle Aborted",
                         "Backup cycle stopped due to disk full");
             break;

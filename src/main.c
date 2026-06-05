@@ -1,5 +1,5 @@
 /**
- * main.c — Entry point for the GitHub Backup Script.
+ * main.c - Entry point for the GitHub Backup Script.
  *
  * This is the last source file in the build sequence because it depends
  * on every other module. It provides the program entry point, performs
@@ -7,7 +7,7 @@
  * (connectivity check → backup cycle → sleep → repeat), and handles
  * graceful shutdown.
  *
- * main.c does not introduce new functionality — it wires together the
+ * main.c does not introduce new functionality - it wires together the
  * modules built in earlier stages:
  *   - config:  loads settings from .env
  *   - logger:  initializes and manages the log file
@@ -22,7 +22,7 @@
  *   backup.exe --shutdown   → signal running daemon to exit gracefully
  *
  * Two-process architecture (Spec Section 10):
- *   The daemon is the headless backup worker — owns the mutex, runs the
+ *   The daemon is the headless backup worker - owns the mutex, runs the
  *   main loop, has no console. Viewers are disposable console processes
  *   that tail the log file. Closing a viewer does not affect the daemon.
  *   Pressing 'q' in a viewer signals the daemon to shut down gracefully.
@@ -30,7 +30,7 @@
  * Startup sequence (daemon mode):
  *   1. Parse command-line arguments (--daemon, --shutdown)
  *   2. Initialize COM (notify_init)
- *   3. Attempt CreateMutex — daemon must create it; fail if already exists
+ *   3. Attempt CreateMutex - daemon must create it; fail if already exists
  *   4. Determine where the exe lives (get_exe_dir)
  *   5. Find .env next to the exe, parse it
  *   6. Create BACKUP_DIR if it doesn't exist
@@ -42,8 +42,8 @@
  *
  * Startup sequence (viewer mode):
  *   1. Parse command-line arguments (--shutdown)
- *   2. Initialize COM (notify_init) — needed for potential toast on error
- *   3. Attempt CreateMutex — if created, no daemon running; spawn daemon,
+ *   2. Initialize COM (notify_init) - needed for potential toast on error
+ *   3. Attempt CreateMutex - if created, no daemon running; spawn daemon,
  *      release mutex, then enter viewer mode
  *   4. If mutex exists, enter viewer mode directly
  *   5. Viewer tails backup.log with ANSI colors until q pressed or closed
@@ -185,9 +185,9 @@ static int signal_shutdown(void) {
 /**
  * Attempt to create the named mutex for single-instance detection.
  * Returns:
- *   0  — mutex created successfully (this is the first/only instance)
- *   1  — mutex already exists (another instance is running)
- *  -1  — error
+ *   0  - mutex created successfully (this is the first/only instance)
+ *   1  - mutex already exists (another instance is running)
+ *  -1  - error
  */
 static int check_single_instance(void) {
 #ifdef _WIN32
@@ -214,7 +214,7 @@ static int check_single_instance(void) {
 
 /**
  * Spawn backup.exe --daemon as a detached background process.
- * The daemon runs with CREATE_NO_WINDOW — it never has a console.
+ * The daemon runs with CREATE_NO_WINDOW - it never has a console.
  * This is called when the user double-clicks backup.exe and no daemon
  * is running yet. The caller then enters viewer mode.
  *
@@ -223,7 +223,7 @@ static int check_single_instance(void) {
 static int spawn_daemon(void) {
 #ifdef _WIN32
     /*
-     * Get the path to the current executable — we'll launch it again
+     * Get the path to the current executable - we'll launch it again
      * with the --daemon flag.
      */
     char exe_path[MAX_URL_LEN];
@@ -242,7 +242,7 @@ static int spawn_daemon(void) {
     STARTUPINFOA si;
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);
-    /* No desktop, no window — completely headless */
+    /* No desktop, no window - completely headless */
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
 
@@ -255,7 +255,7 @@ static int spawn_daemon(void) {
         NULL,               /* Process security attributes */
         NULL,               /* Thread security attributes */
         FALSE,              /* Inherit handles */
-        CREATE_NO_WINDOW,   /* Headless — no console window ever */
+        CREATE_NO_WINDOW,   /* Headless - no console window ever */
         NULL,               /* Use parent's environment */
         NULL,               /* Use parent's working directory */
         &si,                /* Startup info */
@@ -266,7 +266,7 @@ static int spawn_daemon(void) {
         return -1;
     }
 
-    /* Close handles — we don't need to track the daemon process */
+    /* Close handles - we don't need to track the daemon process */
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
@@ -290,10 +290,10 @@ static int spawn_daemon(void) {
 
 /**
  * Enter viewer mode. Tails the daemon's log file with ANSI color output.
- * The viewer polls for 'q' key press — pressing q signals the daemon
+ * The viewer polls for 'q' key press - pressing q signals the daemon
  * to shut down gracefully, then the viewer exits after a brief wait.
  *
- * Ctrl+C and closing the terminal kill only the viewer — the daemon
+ * Ctrl+C and closing the terminal kill only the viewer - the daemon
  * continues running unaffected.
  */
 static void enter_viewer_mode(void) {
@@ -301,7 +301,7 @@ static void enter_viewer_mode(void) {
     /* Initialize console for ANSI output */
     console_init();
 
-    /* Find the log file path — need to parse .env for BACKUP_DIR */
+    /* Find the log file path - need to parse .env for BACKUP_DIR */
     char exe_dir[MAX_URL_LEN];
     get_exe_dir(exe_dir, sizeof(exe_dir));
 
@@ -314,7 +314,7 @@ static void enter_viewer_mode(void) {
     char log_path[MAX_URL_LEN];
     build_log_path(cfg.backup_dir, log_path);
 
-    /* Enter the log viewer — blocks until q pressed, Ctrl+C, or window closed */
+    /* Enter the log viewer - blocks until q pressed, Ctrl+C, or window closed */
     console_log_viewer(log_path);
 
     console_cleanup();
@@ -346,7 +346,7 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
         /* Check for shutdown request (shutdown event or --shutdown signal) */
         if (g_shutdown_requested) {
             log_event(LOG_INFO, "main", NULL, "STOPPING",
-                      "Shutdown requested — exiting gracefully");
+                      "Shutdown requested - exiting gracefully");
             toast_info("Shutting Down",
                        "GitHub Backup is shutting down gracefully");
             break;
@@ -360,9 +360,9 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
         fflush(stderr);
         if (!check_connectivity(config->connectivity_timeout)) {
             log_event(LOG_WARNING, "main", NULL, "SKIPPED",
-                      "No internet detected — cycle skipped");
+                      "No internet detected - cycle skipped");
             toast_info("No Internet",
-                       "No internet detected — cycle skipped");
+                       "No internet detected - cycle skipped");
             sleep_with_shutdown_check(config->cycle_interval, config);
             continue;
         }
@@ -379,9 +379,9 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
         fflush(stderr);
         if (parse_env_file(&cycle_config) != 0) {
             log_error("main", NULL,
-                      "Failed to parse .env — skipping this cycle");
+                      "Failed to parse .env - skipping this cycle");
             toast_error("Config Error",
-                        "Failed to parse .env — skipping this cycle");
+                        "Failed to parse .env - skipping this cycle");
             sleep_with_shutdown_check(config->cycle_interval, config);
             continue;
         }
@@ -389,9 +389,9 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
         /* Ensure BACKUP_DIR exists */
         if (ensure_dir_exists(cycle_config.backup_dir) != 0) {
             log_error("main", NULL,
-                      "Cannot create or access BACKUP_DIR — skipping this cycle");
+                      "Cannot create or access BACKUP_DIR - skipping this cycle");
             toast_error("Directory Error",
-                        "Cannot create BACKUP_DIR — check permissions");
+                        "Cannot create BACKUP_DIR - check permissions");
             sleep_with_shutdown_check(config->cycle_interval, config);
             continue;
         }
@@ -452,7 +452,7 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
 
 /**
  * Run as the headless daemon. This is the backup worker process.
- * It has no console — all output goes to the log file and toasts.
+ * It has no console - all output goes to the log file and toasts.
  * The daemon must already own the mutex when this function is called.
  *
  * Returns 0 on clean exit, 1 on startup failure.
@@ -469,13 +469,13 @@ static int run_daemon(void) {
     if (exe_dir[0] == '\0') {
         fprintf(stderr, "Error: Cannot determine executable directory\n");
         toast_error("Startup Error",
-                    "Cannot determine executable directory — exiting");
+                    "Cannot determine executable directory - exiting");
         notify_cleanup();
         return 1;
     }
 
     /*
-     * Step 2: Find and validate .env — it sits next to the exe.
+     * Step 2: Find and validate .env - it sits next to the exe.
      */
     char env_path[MAX_URL_LEN];
     build_env_path(exe_dir, env_path);
@@ -484,7 +484,7 @@ static int run_daemon(void) {
 
     if (validate_env_exists(env_path) != 0) {
         toast_error("Config Error",
-                    "Config file (.env) not found next to executable — exiting");
+                    "Config file (.env) not found next to executable - exiting");
         notify_cleanup();
         return 1;
     }
@@ -500,7 +500,7 @@ static int run_daemon(void) {
     fflush(stderr);
     if (parse_env_file(&config) != 0) {
         toast_error("Config Error",
-                    "Config validation failed — exiting (requires manual intervention)");
+                    "Config validation failed - exiting (requires manual intervention)");
         notify_cleanup();
         return 1;
     }
@@ -516,7 +516,7 @@ static int run_daemon(void) {
     fflush(stderr);
     if (ensure_dir_exists(config.backup_dir) != 0) {
         toast_error("Directory Error",
-                    "Cannot create BACKUP_DIR — check permissions and path");
+                    "Cannot create BACKUP_DIR - check permissions and path");
         notify_cleanup();
         return 1;
     }
@@ -530,7 +530,7 @@ static int run_daemon(void) {
     fflush(stderr);
     if (log_init(log_path) != 0) {
         toast_error("Log Error",
-                    "Cannot open log file — continuing without file logging");
+                    "Cannot open log file - continuing without file logging");
     }
 
     /*
@@ -540,9 +540,9 @@ static int run_daemon(void) {
     fflush(stderr);
     if (network_init() != 0) {
         log_error("startup", NULL,
-                  "Network initialization failed — cannot proceed");
+                  "Network initialization failed - cannot proceed");
         toast_error("Network Error",
-                    "Failed to initialize HTTP session — exiting");
+                    "Failed to initialize HTTP session - exiting");
         log_close();
         notify_cleanup();
         return 1;
@@ -559,7 +559,7 @@ static int run_daemon(void) {
                                    BACKUP_SHUTDOWN_EVENT_NAME);
     if (g_shutdown_event == NULL) {
         log_event(LOG_WARNING, "main", NULL, "EVENT_WARN",
-                  "Cannot create shutdown event — --shutdown will not work");
+                  "Cannot create shutdown event - --shutdown will not work");
     }
 #endif
 
@@ -609,7 +609,7 @@ int main(int argc, char *argv[]) {
     int want_daemon = 0;
     int want_shutdown = 0;
 
-    fprintf(stderr, "[DBG] main: Startup — parsing arguments\n");
+    fprintf(stderr, "[DBG] main: Startup - parsing arguments\n");
     fflush(stderr);
 
     for (int i = 1; i < argc; i++) {
@@ -631,7 +631,7 @@ int main(int argc, char *argv[]) {
     }
 
     /*
-     * Step 3: Handle --shutdown early — just signal and exit.
+     * Step 3: Handle --shutdown early - just signal and exit.
      */
     if (want_shutdown) {
         int result = signal_shutdown();
@@ -649,24 +649,24 @@ int main(int argc, char *argv[]) {
     if (want_daemon) {
         /*
          * DAEMON MODE: The daemon MUST be the first instance (create the mutex).
-         * If the mutex already exists, another daemon is running — exit with error.
+         * If the mutex already exists, another daemon is running - exit with error.
          */
         if (instance_result == 1) {
             fprintf(stderr, "Error: Another backup daemon is already running.\n");
             toast_error("Daemon Error",
-                        "Another backup daemon is already running — exiting");
+                        "Another backup daemon is already running - exiting");
             notify_cleanup();
             return 1;
         }
         if (instance_result < 0) {
             fprintf(stderr, "Error: Cannot create mutex (daemon startup failed)\n");
             toast_error("Daemon Error",
-                        "Cannot create mutex — exiting");
+                        "Cannot create mutex - exiting");
             notify_cleanup();
             return 1;
         }
 
-        /* Mutex created successfully — we are the daemon. Run the backup loop. */
+        /* Mutex created successfully - we are the daemon. Run the backup loop. */
         int result = run_daemon();
         notify_cleanup();
         return result;
@@ -675,7 +675,7 @@ int main(int argc, char *argv[]) {
     if (instance_result == 1) {
         /*
          * VIEWER MODE (daemon already running):
-         * Mutex exists — the daemon is running. Enter viewer mode directly.
+         * Mutex exists - the daemon is running. Enter viewer mode directly.
          */
         enter_viewer_mode();
         notify_cleanup();
@@ -700,7 +700,7 @@ int main(int argc, char *argv[]) {
         if (spawn_daemon() != 0) {
             fprintf(stderr, "Error: Failed to spawn backup daemon.\n");
             toast_error("Startup Error",
-                        "Failed to start backup daemon — check permissions");
+                        "Failed to start backup daemon - check permissions");
             notify_cleanup();
             return 1;
         }

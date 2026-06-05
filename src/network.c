@@ -1,5 +1,5 @@
 /**
- * network.c — Network implementation for the GitHub Backup Script.
+ * network.c - Network implementation for the GitHub Backup Script.
  *
  * Provides HTTP communication with the GitHub API using WinHTTP on
  * Windows. Includes platform-independent JSON parsing functions for
@@ -66,7 +66,7 @@ static const wchar_t *CONNECTIVITY_HOST = L"github.com";
  */
 static DWORD to_winhttp_timeout(int timeout_ms) {
     if (timeout_ms <= 0) {
-        return 0;  /* No timeout — WinHTTP uses system defaults */
+        return 0;  /* No timeout - WinHTTP uses system defaults */
     }
     return (DWORD)timeout_ms;
 }
@@ -146,7 +146,7 @@ int network_init(void) {
     /*
      * WINHTTP_ACCESS_TYPE_NO_PROXY bypasses WPAD (Web Proxy Auto-Discovery).
      * WINHTTP_ACCESS_TYPE_DEFAULT_PROXY can block for 60+ seconds on
-     * systems with slow or misconfigured proxy auto-detection — the user
+     * systems with slow or misconfigured proxy auto-detection - the user
      * sees the program hang after printing BACKUP_DIR with no output.
      * The backup tool connects directly to api.github.com and
      * codeload.github.com, so proxy detection is unnecessary.
@@ -156,7 +156,7 @@ int network_init(void) {
 
     g_hSession = WinHttpOpen(
         L"GitHubBackup/1.0",                 /* User agent */
-        WINHTTP_ACCESS_TYPE_NO_PROXY,          /* Direct connection — no WPAD */
+        WINHTTP_ACCESS_TYPE_NO_PROXY,          /* Direct connection - no WPAD */
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
         0
@@ -164,7 +164,7 @@ int network_init(void) {
 
     if (g_hSession == NULL) {
         log_error("network", NULL,
-                  "WinHttpOpen failed — cannot initialize HTTP session");
+                  "WinHttpOpen failed - cannot initialize HTTP session");
         return -1;
     }
 
@@ -177,7 +177,7 @@ int network_init(void) {
 int check_connectivity(int timeout_ms) {
     if (g_hSession == NULL) {
         log_error("network", NULL,
-                  "Cannot check connectivity — session not initialized");
+                  "Cannot check connectivity - session not initialized");
         return 0;
     }
 
@@ -185,7 +185,7 @@ int check_connectivity(int timeout_ms) {
     /*
      * Use WinHttpConnect + WinHttpOpenRequest + WinHttpSendRequest with
      * per-request timeouts to implement the connectivity check with timeout.
-     * WinHttpConnect alone has no timeout parameter — if DNS resolution
+     * WinHttpConnect alone has no timeout parameter - if DNS resolution
      * hangs, it blocks indefinitely. By opening a request and setting
      * RESOLVE/CONNECT/RECEIVE timeouts, we ensure the entire check
      * completes within the configured CONNECTIVITY_CHECK_TIMEOUT_MS.
@@ -204,13 +204,13 @@ int check_connectivity(int timeout_ms) {
         DWORD err = GetLastError();
         fprintf(stderr, "[DBG] check_connectivity: WinHttpConnect FAILED (error %lu)\n", err);
         log_event(LOG_WARNING, "network", NULL, "FAILED",
-                  "Connectivity check failed — cannot reach github.com");
+                  "Connectivity check failed - cannot reach github.com");
         return 0;
     }
 
     HINTERNET h_request = WinHttpOpenRequest(
         h_connect,
-        L"HEAD",                    /* HEAD request — no body download */
+        L"HEAD",                    /* HEAD request - no body download */
         L"/",                       /* Root path */
         NULL,
         WINHTTP_NO_REFERER,
@@ -236,7 +236,7 @@ int check_connectivity(int timeout_ms) {
                          &timeout, sizeof(timeout));
     }
 
-    /* Send the request — this is where the timeout applies */
+    /* Send the request - this is where the timeout applies */
     BOOL send_result = WinHttpSendRequest(
         h_request,
         WINHTTP_NO_ADDITIONAL_HEADERS, 0,
@@ -247,16 +247,16 @@ int check_connectivity(int timeout_ms) {
         DWORD err = GetLastError();
         (void)err;
         fprintf(stderr, "[DBG] check_connectivity: WinHttpSendRequest FAILED (error %lu)\n", err);
-        fprintf(stderr, "[DBG] check_connectivity: Timed out after %dms — no internet\n",
+        fprintf(stderr, "[DBG] check_connectivity: Timed out after %dms - no internet\n",
                 timeout_ms);
         WinHttpCloseHandle(h_request);
         WinHttpCloseHandle(h_connect);
         log_event(LOG_WARNING, "network", NULL, "FAILED",
-                  "Connectivity check failed — cannot reach github.com");
+                  "Connectivity check failed - cannot reach github.com");
         return 0;
     }
 
-    /* We don't need to read the response — the fact that SendRequest
+    /* We don't need to read the response - the fact that SendRequest
      * succeeded means DNS resolved, TCP connected, and TLS negotiated. */
     WinHttpCloseHandle(h_request);
     WinHttpCloseHandle(h_connect);
@@ -276,7 +276,7 @@ int http_get(const char *url, const char *token,
 
     if (g_hSession == NULL) {
         log_error("network", NULL,
-                  "Cannot send HTTP request — session not initialized");
+                  "Cannot send HTTP request - session not initialized");
         return -1;
     }
 
@@ -285,7 +285,7 @@ int http_get(const char *url, const char *token,
      * Determine which host to connect to based on the URL.
      * All API requests go to api.github.com.
      * The connectivity check uses github.com, but it does not
-     * call http_get() — it uses check_connectivity() directly.
+     * call http_get() - it uses check_connectivity() directly.
      */
     HINTERNET h_connect = WinHttpConnect(
         g_hSession,
@@ -392,7 +392,7 @@ int http_get(const char *url, const char *token,
      * IMPORTANT: The header must be built as a char string FIRST,
      * then converted to wchar_t. Writing ASCII bytes into a wchar_t
      * buffer via snprintf corrupts the data because wchar_t is 2 bytes
-     * — writing one char per byte misaligns the wchar_t boundaries.
+     * - writing one char per byte misaligns the wchar_t boundaries.
      * Using separate char and wchar_t buffers avoids this aliasing bug.
      */
     LPCWSTR additional_headers = NULL;
@@ -460,7 +460,7 @@ int http_get(const char *url, const char *token,
                         &status_code, &status_size,
                         WINHTTP_NO_HEADER_INDEX);
 
-    fprintf(stderr, "[DBG] http_get: Response received — HTTP %lu, reading body...\n", status_code);
+    fprintf(stderr, "[DBG] http_get: Response received - HTTP %lu, reading body...\n", status_code);
 
     if (response_code != NULL) {
         *response_code = (int)status_code;
@@ -483,7 +483,7 @@ int http_get(const char *url, const char *token,
         int remaining = body_size - total_read - 1;
         if (remaining <= 0) {
             log_event(LOG_WARNING, "network", NULL, "TRUNCATED",
-                      "HTTP response body exceeds buffer — data truncated");
+                      "HTTP response body exceeds buffer - data truncated");
             break;
         }
 
@@ -506,7 +506,7 @@ int http_get(const char *url, const char *token,
 
     response_body[total_read] = '\0';
 
-    fprintf(stderr, "[DBG] http_get: Body read complete — %d bytes\n", total_read);
+    fprintf(stderr, "[DBG] http_get: Body read complete - %d bytes\n", total_read);
 
     WinHttpCloseHandle(h_request);
     WinHttpCloseHandle(h_connect);
@@ -537,7 +537,7 @@ void network_cleanup(void) {
 
 int network_init(void) {
     log_event(LOG_INFO, "network", NULL, "INFO",
-              "Network module initialized (non-Windows — HTTP stubs active)");
+              "Network module initialized (non-Windows - HTTP stubs active)");
     return 0;
 }
 
@@ -571,7 +571,7 @@ int http_get(const char *url, const char *token,
 
 void network_cleanup(void) {
     log_event(LOG_INFO, "network", NULL, "OK",
-              "Network cleanup (non-Windows — no-op)");
+              "Network cleanup (non-Windows - no-op)");
 }
 
 #endif /* _WIN32 */
@@ -593,7 +593,7 @@ void network_cleanup(void) {
  *
  * These limitations are acceptable because the only JSON fields we
  * parse are "default_branch" (string) and rate limit values (integers)
- * from GitHub API responses — all flat, single-value fields.
+ * from GitHub API responses - all flat, single-value fields.
  * ================================================================ */
 
 /**
@@ -623,7 +623,7 @@ static const char *find_json_key(const char *json, const char *key) {
     /*
      * Build the search pattern: "<key>"
      * We search for the quoted key name in the JSON string.
-     * This is sufficient for flat JSON — it does not match
+     * This is sufficient for flat JSON - it does not match
      * key names that appear inside string values.
      */
     size_t key_len = strlen(key);
@@ -678,7 +678,7 @@ int parse_json_string(const char *json, const char *key,
     /*
      * If we stopped because of the buffer limit, advance past the
      * remaining characters to find the closing quote. This handles
-     * truncation gracefully — the value is truncated but the parse
+     * truncation gracefully - the value is truncated but the parse
      * itself succeeded. The caller's responsibility to provide an
      * adequately-sized buffer.
      */
@@ -771,7 +771,7 @@ int get_default_branch(const char *owner, const char *repo,
             log_event(LOG_ERROR, "network", repo, "AUTH_ERROR",
                       "Token is invalid, expired, or lacks required scope");
             toast_error("Authentication Failed",
-                       "Token is invalid or expired — check .env");
+                       "Token is invalid or expired - check .env");
             return status_code;
         }
 
@@ -785,11 +785,11 @@ int get_default_branch(const char *owner, const char *repo,
                             wait_seconds);
                     char detail[256];
                     snprintf(detail, sizeof(detail),
-                             "Rate limited — sleeping %ld seconds until reset window",
+                             "Rate limited - sleeping %ld seconds until reset window",
                              wait_seconds);
                     log_event(LOG_WARNING, "network", repo, "RATE_LIMITED", detail);
                     toast_error("Rate Limited",
-                               "GitHub API rate limit — sleeping until reset");
+                               "GitHub API rate limit - sleeping until reset");
 
 #ifdef _WIN32
                     /* Sleep in 1-second intervals so we can be interrupted */
@@ -830,7 +830,7 @@ int get_default_branch(const char *owner, const char *repo,
         return 0;
     }
 
-    /* Should not reach here — the loop only continues on rate limit retry */
+    /* Should not reach here - the loop only continues on rate limit retry */
     return -1;
 }
 
@@ -849,7 +849,7 @@ int download_repo_zip(const char *owner, const char *repo,
 
     if (g_hSession == NULL) {
         log_error("network", repo,
-                  "Cannot download — session not initialized");
+                  "Cannot download - session not initialized");
         return -1;
     }
 
@@ -997,7 +997,7 @@ int download_repo_zip(const char *owner, const char *repo,
                         &status_code, &status_size,
                         WINHTTP_NO_HEADER_INDEX);
 
-    fprintf(stderr, "[DBG] download_repo_zip: Response — HTTP %lu\n", status_code);
+    fprintf(stderr, "[DBG] download_repo_zip: Response - HTTP %lu\n", status_code);
 
     if (status_code != HTTP_OK) {
         fprintf(stderr, "[DBG] download_repo_zip: Non-200 status (HTTP %lu)\n", status_code);
@@ -1023,11 +1023,11 @@ int download_repo_zip(const char *owner, const char *repo,
                 if (wait_seconds > 0 && wait_seconds < 3600) {
                     char rl_detail[256];
                     snprintf(rl_detail, sizeof(rl_detail),
-                             "Rate limited on zip download — sleeping %ld seconds until reset window",
+                             "Rate limited on zip download - sleeping %ld seconds until reset window",
                              wait_seconds);
                     log_event(LOG_WARNING, "network", repo, "RATE_LIMITED", rl_detail);
                     toast_error("Rate Limited",
-                               "GitHub API rate limit — sleeping until reset");
+                               "GitHub API rate limit - sleeping until reset");
 
                     for (long s = 0; s < wait_seconds; s++) {
                         Sleep(1000);
@@ -1085,7 +1085,7 @@ int download_repo_zip(const char *owner, const char *repo,
         size_t written = fwrite(chunk, 1, bytes_read, fp);
         if (written != bytes_read) {
             log_error("network", repo,
-                      "File write error during zip download — possible disk full");
+                      "File write error during zip download - possible disk full");
             fclose(fp);
             WinHttpCloseHandle(h_request);
             WinHttpCloseHandle(h_connect);
@@ -1105,7 +1105,7 @@ int download_repo_zip(const char *owner, const char *repo,
     return 0;
     }  /* end retry loop */
 
-    /* Should not reach here — the loop only continues on rate limit retry */
+    /* Should not reach here - the loop only continues on rate limit retry */
     return -1;
 }
 

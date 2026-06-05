@@ -1,15 +1,15 @@
 /**
- * console.c — Console output implementation for the GitHub Backup Script.
+ * console.c - Console output implementation for the GitHub Backup Script.
  *
  * Implements ANSI color-coded log output and the log viewer tailing loop
- * for viewer mode. The viewer is a disposable process — closing it or
+ * for viewer mode. The viewer is a disposable process - closing it or
  * pressing Ctrl+C kills only the viewer, not the daemon.
  *
  * Viewer controls (Spec Section 10c, 11a):
- *   q       — Signal daemon to shut down gracefully, then exit viewer
- *   Ctrl+C  — Close viewer only (daemon continues running)
- *   Alt+F4  — Close viewer only (daemon continues running)
- *   X button — Close viewer only (daemon continues running)
+ *   q       - Signal daemon to shut down gracefully, then exit viewer
+ *   Ctrl+C  - Close viewer only (daemon continues running)
+ *   Alt+F4  - Close viewer only (daemon continues running)
+ *   X button - Close viewer only (daemon continues running)
  */
 
 #include "console.h"
@@ -157,13 +157,13 @@ void console_log_viewer(const char *log_path) {
     if (!g_console_active) return;
 
     /*
-     * Startup banner — updated for two-process model.
+     * Startup banner - updated for two-process model.
      * Shows controls and behavior hints per Spec Section 10c.
      */
     fprintf(stdout, "\n");
     fprintf(stdout, "%s%s=============================%s\n",
             ANSI_CYAN, ANSI_DIM, ANSI_RESET);
-    fprintf(stdout, "%s%s  GitHub Backup — Log Viewer  %s\n",
+    fprintf(stdout, "%s%s  GitHub Backup - Log Viewer  %s\n",
             ANSI_CYAN, ANSI_DIM, ANSI_RESET);
     fprintf(stdout, "%s%s=============================%s\n",
             ANSI_CYAN, ANSI_DIM, ANSI_RESET);
@@ -198,17 +198,17 @@ void console_log_viewer(const char *log_path) {
         }
 
         if (!fp) {
-            fprintf(stdout, "%sLog file not found after 10 seconds — exiting.%s\n",
+            fprintf(stdout, "%sLog file not found after 10 seconds - exiting.%s\n",
                     ANSI_RED, ANSI_RESET);
             fflush(stdout);
             return;
         }
     }
 
-    /* Seek to end — only show new entries from here on */
+    /* Seek to end - only show new entries from here on */
     fseek(fp, 0, SEEK_END);
 
-    /* Initial tail — read any entries that appear between seek and loop start */
+    /* Initial tail - read any entries that appear between seek and loop start */
     char line[MAX_CONSOLE_LINE_LEN];
     while (fgets(line, sizeof(line), fp)) {
         /* Strip trailing newline */
@@ -236,7 +236,7 @@ void console_log_viewer(const char *log_path) {
     }
 
     /*
-     * Main viewer loop — poll for new log entries AND keyboard input.
+     * Main viewer loop - poll for new log entries AND keyboard input.
      * Uses _kbhit() for non-blocking keyboard check on Windows.
      *
      * Exit conditions:
@@ -246,7 +246,7 @@ void console_log_viewer(const char *log_path) {
      */
 #ifdef _WIN32
     /*
-     * Disable Ctrl+C breaking into the viewer — let the default handler
+     * Disable Ctrl+C breaking into the viewer - let the default handler
      * terminate the viewer process cleanly. The daemon is unaffected
      * because it runs as a separate process with its own console lifetime.
      */
@@ -287,7 +287,7 @@ void console_log_viewer(const char *log_path) {
         if (_kbhit()) {
             int ch = _getch();
             if (ch == 'q' || ch == 'Q') {
-                fprintf(stdout, "\n%s%sShutdown requested — signaling daemon...%s\n",
+                fprintf(stdout, "\n%s%sShutdown requested - signaling daemon...%s\n",
                         ANSI_YELLOW, ANSI_DIM, ANSI_RESET);
                 fflush(stdout);
 
@@ -301,6 +301,7 @@ void console_log_viewer(const char *log_path) {
                     SetEvent(h_event);
                     CloseHandle(h_event);
                     shutdown_signaled = 1;
+                    (void)shutdown_signaled;
                 } else {
                     fprintf(stdout, "%sError: Cannot signal shutdown (daemon may already be stopped)%s\n",
                             ANSI_RED, ANSI_RESET);
@@ -334,7 +335,7 @@ void console_log_viewer(const char *log_path) {
                     }
                 }
 
-                fprintf(stdout, "%s%sDaemon shutdown signal sent — viewer exiting.%s\n",
+                fprintf(stdout, "%s%sDaemon shutdown signal sent - viewer exiting.%s\n",
                         ANSI_GREEN, ANSI_DIM, ANSI_RESET);
                 fflush(stdout);
                 break;
