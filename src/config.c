@@ -426,17 +426,17 @@ int parse_env_file(backup_config *config) {
         if (strcmp(key, ENV_VAR_GITHUB_BASE_URL) == 0) {
             snprintf(config->base_url, sizeof(config->base_url),
                      "%s", value);
-            fprintf(stderr, "[DBG] config: Parsed %s (len=%zu)\n", key, strlen(value));
+            DBG("config: Parsed %s (len=%zu)", key, strlen(value));
         } else if (strcmp(key, ENV_VAR_GITHUB_TOKEN) == 0) {
             /* Standalone token - takes precedence over URL-embedded token */
             snprintf(config->token, sizeof(config->token),
                      "%s", value);
-            fprintf(stderr, "[DBG] config: Parsed %s (len=%zu)\n", key, strlen(value));
+            DBG("config: Parsed %s (len=%zu)", key, strlen(value));
         } else if (strcmp(key, ENV_VAR_GITHUB_OWNER) == 0) {
             /* Standalone owner - used with GITHUB_TOKEN when base_url is absent */
             snprintf(config->owner, sizeof(config->owner),
                      "%s", value);
-            fprintf(stderr, "[DBG] config: Parsed %s = '%s'\n", key, value);
+            DBG("config: Parsed %s = '%s'", key, value);
         } else if (strcmp(key, ENV_VAR_REPOS) == 0) {
             snprintf(config->repos_raw, sizeof(config->repos_raw),
                      "%s", value);
@@ -492,12 +492,11 @@ int parse_env_file(backup_config *config) {
     log_event(LOG_INFO, "config", NULL, "OK",
               "Loaded configuration from .env");
 
-    fprintf(stderr, "[DBG] config: Loaded - %d repos, owner='%s', backup_dir='%s'\n",
+    DBG("config: Loaded - %d repos, owner='%s', backup_dir='%s'",
             config->repo_count, config->owner, config->backup_dir);
     for (int i = 0; i < config->repo_count; i++) {
-        fprintf(stderr, "[DBG] config:   repo[%d] = '%s'\n", i, config->repos[i]);
+        DBG("config:   repo[%d] = '%s'", i, config->repos[i]);
     }
-    fflush(stderr);
 
     return 0;
 }

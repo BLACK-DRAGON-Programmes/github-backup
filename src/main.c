@@ -356,8 +356,7 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
          * Step 1: Check internet connectivity.
          * If no internet, skip the cycle and sleep.
          */
-        fprintf(stderr, "[DBG] main_loop: Checking connectivity...\n");
-        fflush(stderr);
+        DBG("main_loop: Checking connectivity...");
         if (!check_connectivity(config->connectivity_timeout)) {
             log_event(LOG_WARNING, "main", NULL, "SKIPPED",
                       "No internet detected - cycle skipped");
@@ -375,8 +374,7 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
         snprintf(cycle_config.backup_dir, sizeof(cycle_config.backup_dir),
                  "%s", exe_dir);
 
-        fprintf(stderr, "[DBG] main_loop: Re-reading .env...\n");
-        fflush(stderr);
+        DBG("main_loop: Re-reading .env...");
         if (parse_env_file(&cycle_config) != 0) {
             log_error("main", NULL,
                       "Failed to parse .env - skipping this cycle");
@@ -462,8 +460,7 @@ static int run_daemon(void) {
      * Step 1: Determine where the executable lives.
      */
     char exe_dir[MAX_URL_LEN];
-    fprintf(stderr, "[DBG] main: Resolving exe directory...\n");
-    fflush(stderr);
+    DBG("main: Resolving exe directory...");
     get_exe_dir(exe_dir, sizeof(exe_dir));
 
     if (exe_dir[0] == '\0') {
@@ -479,8 +476,7 @@ static int run_daemon(void) {
      */
     char env_path[MAX_URL_LEN];
     build_env_path(exe_dir, env_path);
-    fprintf(stderr, "[DBG] main: Validating .env at %s\n", env_path);
-    fflush(stderr);
+    DBG("main: Validating .env at %s", env_path);
 
     if (validate_env_exists(env_path) != 0) {
         toast_error("Config Error",
@@ -496,8 +492,7 @@ static int run_daemon(void) {
     memset(&config, 0, sizeof(backup_config));
     snprintf(config.backup_dir, sizeof(config.backup_dir), "%s", exe_dir);
 
-    fprintf(stderr, "[DBG] main: Parsing .env...\n");
-    fflush(stderr);
+    DBG("main: Parsing .env...");
     if (parse_env_file(&config) != 0) {
         toast_error("Config Error",
                     "Config validation failed - exiting (requires manual intervention)");
@@ -505,15 +500,13 @@ static int run_daemon(void) {
         return 1;
     }
 
-    fprintf(stderr, "[DBG] main: Parsed %d repos, owner=%s, timeout=%dms, cycle=%ds\n",
+    DBG("main: Parsed %d repos, owner=%s, timeout=%dms, cycle=%ds",
             config.repo_count, config.owner, config.http_timeout, config.cycle_interval);
-    fflush(stderr);
 
     /*
      * Step 4: Create BACKUP_DIR if it doesn't exist.
      */
-    fprintf(stderr, "[DBG] main: Ensuring BACKUP_DIR exists: %s\n", config.backup_dir);
-    fflush(stderr);
+    DBG("main: Ensuring BACKUP_DIR exists: %s", config.backup_dir);
     if (ensure_dir_exists(config.backup_dir) != 0) {
         toast_error("Directory Error",
                     "Cannot create BACKUP_DIR - check permissions and path");
@@ -526,18 +519,25 @@ static int run_daemon(void) {
      */
     char log_path[MAX_URL_LEN];
     build_log_path(config.backup_dir, log_path);
-    fprintf(stderr, "[DBG] main: Initializing log file at %s\n", log_path);
-    fflush(stderr);
+    DBG("main: Initializing log file at %s", log_path);
     if (log_init(log_path) != 0) {
         toast_error("Log Error",
                     "Cannot open log file - continuing without file logging");
     }
 
     /*
+     * DEV PHASE: Write immediate startup progress to the log file.
+     * This lets the viewer show the daemon is alive BEFORE the main loop.
+     * Without these, the viewer sees an empty log file for 30+ seconds
+     * while the daemon runs connectivity checks and downloads.
+     */
+    log_event(LOG_INFO, "daemon", NULL, "STARTUP",
+              "Log file initialized - daemon startup in progress");
+
+    /*
      * Step 6: Initialize the network session.
      */
-    fprintf(stderr, "[DBG] main: Initializing network (WinHTTP)...\n");
-    fflush(stderr);
+    DBG("main: Initializing network (WinHTTP)...");
     if (network_init() != 0) {
         log_error("startup", NULL,
                   "Network initialization failed - cannot proceed");
@@ -548,13 +548,15 @@ static int run_daemon(void) {
         return 1;
     }
 
+    log_event(LOG_INFO, "daemon", NULL, "STARTUP",
+              "Network initialized - checking connectivity next");
+
     /*
      * Step 7: Create the shutdown event.
      * This event is checked during sleep intervals and by --shutdown / q key.
      */
 #ifdef _WIN32
-    fprintf(stderr, "[DBG] main: Creating shutdown event...\n");
-    fflush(stderr);
+    DBG("main: Creating shutdown event...");
     g_shutdown_event = CreateEventA(NULL, TRUE, FALSE,
                                    BACKUP_SHUTDOWN_EVENT_NAME);
     if (g_shutdown_event == NULL) {
@@ -570,6 +572,13 @@ static int run_daemon(void) {
               "GitHub Backup daemon started successfully");
     toast_info("Service Started",
                "GitHub Backup daemon is running in the background");
+
+    /*
+     * DEV PHASE: Log the first connectivity check immediately.
+     * This gives the viewer something to show within seconds of startup.
+     */
+    log_event(LOG_INFO, "daemon", NULL, "PROGRESS",
+              "About to check internet connectivity...");
 
     /*
      * Step 9: Enter the main backup loop.
@@ -609,8 +618,7 @@ int main(int argc, char *argv[]) {
     int want_daemon = 0;
     int want_shutdown = 0;
 
-    fprintf(stderr, "[DBG] main: Startup - parsing arguments\n");
-    fflush(stderr);
+    DBG("main: Startup - parsing arguments");
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--daemon") == 0) {
@@ -624,8 +632,7 @@ int main(int argc, char *argv[]) {
      * Step 2: Initialize notification subsystem (COM on Windows).
      * Must happen first so that startup errors can fire toasts.
      */
-    fprintf(stderr, "[DBG] main: Initializing COM (notifications)...\n");
-    fflush(stderr);
+    DBG("main: Initializing COM (notifications)...");
     if (notify_init() != 0) {
         fprintf(stderr, "Warning: Toast notifications unavailable\n");
     }
@@ -642,8 +649,7 @@ int main(int argc, char *argv[]) {
     /*
      * Step 4: Check for single instance via named mutex.
      */
-    fprintf(stderr, "[DBG] main: Checking single instance (mutex)...\n");
-    fflush(stderr);
+    DBG("main: Checking single instance (mutex)...");
     int instance_result = check_single_instance();
 
     if (want_daemon) {

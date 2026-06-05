@@ -194,11 +194,9 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     char final_path[MAX_PATH_BUF] = {0};
     char detail[MAX_URL_LEN];
 
-    fprintf(stderr, "[DBG] backup: === Starting backup for '%s' ===\n", repo);
-    fflush(stderr);
+    DBG("backup: === Starting backup for '%s' ===", repo);
 
-    fprintf(stderr, "[DBG] backup: Resolving default branch for %s/%s...\n", owner, repo);
-    fflush(stderr);
+    DBG("backup: Resolving default branch for %s/%s...", owner, repo);
 
     log_event(LOG_INFO, "backup", repo, "START",
               "Beginning backup for repository");
@@ -213,8 +211,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     );
 
     if (branch_result != 0) {
-        fprintf(stderr, "[DBG] backup: get_default_branch FAILED (code=%d)\n", branch_result);
-        fflush(stderr);
+        DBG("backup: get_default_branch FAILED (code=%d)", branch_result);
         /*
          * get_default_branch returns specific HTTP status codes on API
          * failures so we can classify the error precisely. Network errors
@@ -236,8 +233,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
              "Default branch: %s - downloading zip archive", branch);
     log_event(LOG_INFO, "backup", repo, "OK", detail);
 
-    fprintf(stderr, "[DBG] backup: Branch='%s' - constructing paths...\n", branch);
-    fflush(stderr);
+    DBG("backup: Branch='%s' - constructing paths...", branch);
 
     /*
      * Step 2: Validate and construct file paths for the atomic write
@@ -275,8 +271,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
      * The download streams directly to disk - no memory buffering.
      */
 
-    fprintf(stderr, "[DBG] backup: Downloading zip to %s\n", temp_path);
-    fflush(stderr);
+    DBG("backup: Downloading zip to %s", temp_path);
 
     int download_result = download_repo_zip(
         owner, repo, branch, token, temp_path,
@@ -284,8 +279,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     );
 
     if (download_result != 0) {
-        fprintf(stderr, "[DBG] backup: download_repo_zip FAILED (code=%d)\n", download_result);
-        fflush(stderr);
+        DBG("backup: download_repo_zip FAILED (code=%d)", download_result);
         cleanup_temp_file(temp_path);
 
         if (download_result == -2) {
@@ -299,8 +293,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
      * Check that it exists, is non-zero in size, and is readable.
      */
 
-    fprintf(stderr, "[DBG] backup: Verifying downloaded file at %s...\n", temp_path);
-    fflush(stderr);
+    DBG("backup: Verifying downloaded file at %s...", temp_path);
 
     if (verify_downloaded_file(temp_path) != 0) {
         log_error("backup", repo,
@@ -315,8 +308,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
      * At no point does the repo have zero valid backups.
      */
 
-    fprintf(stderr, "[DBG] backup: Atomic write: %s -> %s\n", temp_path, final_path);
-    fflush(stderr);
+    DBG("backup: Atomic write: %s -> %s", temp_path, final_path);
 
     if (atomic_write(temp_path, final_path) != 0) {
         /*
@@ -337,8 +329,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     log_event(LOG_SUCCESS, "backup", repo, "OK", detail);
     toast_success(repo, "Backup completed successfully");
 
-    fprintf(stderr, "[DBG] backup: === '%s' BACKUP COMPLETE ===\n", repo);
-    fflush(stderr);
+    DBG("backup: === '%s' BACKUP COMPLETE ===", repo);
 
     return BACKUP_OK;
 }
@@ -354,8 +345,7 @@ int run_backup_cycle(const backup_config *config,
     *succeeded = 0;
     *failed = 0;
 
-    fprintf(stderr, "[DBG] backup: === CYCLE START - %d repos ===\n", config->repo_count);
-    fflush(stderr);
+    DBG("backup: === CYCLE START - %d repos ===", config->repo_count);
 
     int cycle_aborted = 0;
 

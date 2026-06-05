@@ -273,21 +273,21 @@ static void show_toast_powershell(const char *title, const char *message) {
 
 
 int notify_init(void) {
-    fprintf(stderr, "[DBG] notify: Initializing COM (STA)...\n");
+    DBG("notify: Initializing COM (STA)...");
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
-        fprintf(stderr, "[DBG] notify: COM init FAILED (hr=0x%lx)\n", (unsigned long)hr);
+        DBG("notify: COM init FAILED (hr=0x%lx)", (unsigned long)hr);
         log_error("notify", NULL, "COM initialization failed");
         return -1;
     }
     g_com_initialized = 1;
-    fprintf(stderr, "[DBG] notify: COM initialized successfully\n");
+    DBG("notify: COM initialized successfully");
     return 0;
 }
 
 
 void toast_info(const char *title, const char *message) {
-    fprintf(stderr, "[DBG] notify: [INFO]  '%s' - '%s'\n", title, message);
+    DBG("notify: [INFO]  '%s' - '%s'", title, message);
     log_event(LOG_INFO, "toast", NULL, "INFO", message);
     #ifdef _WIN32
     show_toast_powershell(title, message);
@@ -296,7 +296,7 @@ void toast_info(const char *title, const char *message) {
 
 
 void toast_success(const char *repo, const char *message) {
-    fprintf(stderr, "[DBG] notify: [OK]     '%s' - '%s'\n", repo, message);
+    DBG("notify: [OK]     '%s' - '%s'", repo, message);
     log_event(LOG_SUCCESS, "toast", repo, "OK", message);
     #ifdef _WIN32
     char title[512];
@@ -307,7 +307,7 @@ void toast_success(const char *repo, const char *message) {
 
 
 void toast_error(const char *title, const char *message) {
-    fprintf(stderr, "[DBG] notify: [ERROR] '%s' - '%s'\n", title, message);
+    DBG("notify: [ERROR] '%s' - '%s'", title, message);
     log_event(LOG_ERROR, "toast", NULL, "FAILED", message);
     #ifdef _WIN32
     show_toast_powershell(title, message);
@@ -317,7 +317,7 @@ void toast_error(const char *title, const char *message) {
 
 void notify_cleanup(void) {
     if (g_com_initialized) {
-        fprintf(stderr, "[DBG] notify: Cleanup - CoUninitialize\n");
+        DBG("notify: Cleanup - CoUninitialize");
         CoUninitialize();
         g_com_initialized = 0;
     }

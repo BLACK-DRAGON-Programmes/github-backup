@@ -10,13 +10,24 @@
  * the program's lifetime (log_event), and closed on shutdown (log_close).
  * Rotation (rotate_log) deletes the file and reopens when it exceeds
  * the configured size threshold (Decision 003).
+ *
+ * DEV PHASE: DBG_ENABLED activates the log_debug() function and the
+ * DBG() macro in logger.h. Comment out DBG_ENABLED below for production.
  */
+
+/*
+ * DEV PHASE: Toggle ALL debug output project-wide.
+ * When defined: DBG() writes to stderr AND the log file.
+ * When commented out: DBG() compiles to nothing, zero overhead.
+ */
+#define DBG_ENABLED
 
 #include "console.h"
 #include "logger.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 #include <time.h>
 
 #ifdef _WIN32
@@ -111,13 +122,16 @@ void log_event(log_level level, const char *action, const char *repo,
     fflush(g_log_file);
 
     /* DEV PHASE: Dual output to stderr for terminal visibility during testing.
-     * Remove this block once the project exits the testing phase. */
+     * Controlled by DBG_ENABLED — comment out DBG_ENABLED in this file
+     * and recompile to eliminate all debug output including this block. */
+#ifdef DBG_ENABLED
     fprintf(stderr, "[%s] %s | %s", timestamp, level_string(level), action);
     if (repo != NULL) fprintf(stderr, " | %s", repo);
     fprintf(stderr, " | %s", status);
     if (detail != NULL) fprintf(stderr, " | %s", detail);
     fprintf(stderr, "\n");
     fflush(stderr);
+#endif
 
     /* Bridge to ANSI console output when available */
     if (g_console_output) {
@@ -197,6 +211,37 @@ void log_set_console_output(int enabled) {
 int log_get_console_output(void) {
     return g_console_output;
 }
+
+
+#ifdef DBG_ENABLED
+
+/**
+ * Write a raw debug message to the log file with a timestamp.
+ * Called by the DBG() macro in logger.h.
+ * Format: [YYYY-MM-DD HH:MM:SS] <formatted message>
+ *
+ * If the log file is not yet opened (g_log_file == NULL), silently
+ * returns - the debug output already went to stderr via the DBG macro.
+ */
+void log_debug(const char *fmt, ...) {
+    if (g_log_file == NULL) return;
+
+    char timestamp[20];
+    get_timestamp(timestamp, sizeof(timestamp));
+
+    fprintf(g_log_file, "[%s] ", timestamp);
+
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(g_log_file, fmt, args);
+    va_end(args);
+
+    fprintf(g_log_file, "\n");
+    fflush(g_log_file);
+}
+
+#endif /* DBG_ENABLED */
+
 
 void log_close(void) {
     if (g_log_file != NULL && g_log_file != stderr) {

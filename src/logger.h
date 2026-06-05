@@ -8,12 +8,74 @@
  * Every module in the project calls logger functions to record events.
  * The logger is the first utility module in the build sequence because
  * all subsequent modules depend on it for event recording.
+ *
+ * === DEV PHASE DEBUG MACRO ===
+ *
+ * DBG() writes debug output to BOTH stderr AND the log file.
+ * In daemon mode (headless, no console), stderr is invisible but the
+ * log file is tailed by the viewer - so DBG output appears in the
+ * viewer's terminal via the log file.
+ *
+ * To disable ALL debug output for production:
+ *   1. Comment out or delete:   #define DBG_ENABLED
+ *   2. Recompile
+ * All DBG() calls compile to ((void)0) - zero overhead, zero output.
+ * The log_debug() function body is also compiled out.
  */
 
 #ifndef LOGGER_H
 #define LOGGER_H
 
 #include "constants.h"
+
+#include <stdarg.h>
+#include <stdio.h>
+
+
+/* ================================================================
+ * DEV PHASE: Compile-time debug logging toggle.
+ *
+ * When DBG_ENABLED is defined, DBG(fmt, ...) expands to a do-while
+ * block that writes to stderr AND appends to the log file (via
+ * log_debug()). Both outputs include the [DBG] prefix.
+ *
+ * When DBG_ENABLED is NOT defined, DBG(fmt, ...) expands to
+ * ((void)0) - the compiler eliminates all debug output completely.
+ * ================================================================ */
+
+#ifdef DBG_ENABLED
+
+/**
+ * Write a raw debug string to the log file with a timestamp prefix.
+ * Called by the DBG macro. Writes "[YYYY-MM-DD HH:MM:SS] <msg>\n".
+ * If the log file is not yet opened (g_log_file == NULL), silently
+ * returns - the debug output still went to stderr.
+ *
+ * NOT for direct use in application code - use DBG() instead.
+ */
+void log_debug(const char *fmt, ...);
+
+/**
+ * DBG - Debug print macro. Writes to stderr AND the log file.
+ *
+ * Usage: DBG("network_init: Calling WinHttpOpen...");
+ *        DBG("download progress: %lu bytes", total_downloaded);
+ *
+ * The [DBG] prefix is added automatically. A newline is appended
+ * automatically. No manual \n needed in the format string.
+ */
+#define DBG(fmt, ...) do { \
+    fprintf(stderr, "[DBG] " fmt "\n", ##__VA_ARGS__); \
+    fflush(stderr); \
+    log_debug("[DBG] " fmt, ##__VA_ARGS__); \
+} while(0)
+
+#else
+
+/* Production build: DBG compiles to nothing */
+#define DBG(fmt, ...) ((void)0)
+
+#endif /* DBG_ENABLED */
 
 
 /**

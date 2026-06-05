@@ -188,13 +188,24 @@ void console_log_viewer(const char *log_path) {
         /*
          * If the log file doesn't exist yet (daemon just started),
          * wait for it to appear. Poll every 500ms for up to 10 seconds.
+         * DEV PHASE: Show periodic status messages so the user knows
+         * the viewer is alive and waiting for the daemon.
          */
         int waited = 0;
+        int dot_count = 0;
         while (waited < 20000) {
             Sleep(500);
             waited += 500;
             fp = fopen(log_path, "r");
             if (fp) break;
+
+            /* Print a waiting indicator every 2 seconds */
+            dot_count++;
+            if (dot_count % 4 == 0) {
+                fprintf(stdout, "%s  Still waiting for daemon... (%d seconds)%s\n",
+                        ANSI_DIM, waited / 1000, ANSI_RESET);
+                fflush(stdout);
+            }
         }
 
         if (!fp) {
