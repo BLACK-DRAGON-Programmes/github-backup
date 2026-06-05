@@ -110,20 +110,12 @@ void log_event(log_level level, const char *action, const char *repo,
     fprintf(g_log_file, "\n");
     fflush(g_log_file);
 
-    /*
-     * DEV PHASE: Always print to stderr so the operator can see
-     * exactly what the program is doing. Structured file-only
-     * logging is useless when diagnosing hangs — every log entry
-     * must reach the terminal immediately.
-     */
+    /* DEV PHASE: Dual output to stderr for terminal visibility during testing.
+     * Remove this block once the project exits the testing phase. */
     fprintf(stderr, "[%s] %s | %s", timestamp, level_string(level), action);
-    if (repo != NULL) {
-        fprintf(stderr, " | %s", repo);
-    }
+    if (repo != NULL) fprintf(stderr, " | %s", repo);
     fprintf(stderr, " | %s", status);
-    if (detail != NULL) {
-        fprintf(stderr, " | %s", detail);
-    }
+    if (detail != NULL) fprintf(stderr, " | %s", detail);
     fprintf(stderr, "\n");
     fflush(stderr);
 

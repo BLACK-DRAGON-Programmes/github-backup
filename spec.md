@@ -4,10 +4,18 @@
 
 A generic Windows-native tool that automatically backs up specified GitHub repositories to local zip archives. The tool runs as a scheduled task (or manually) on Windows 10, executes on a configurable cycle interval (default: 1 hour, when internet is available), and retains only the latest zip per repository. The target account, token, and list of repositories to back up are all sourced from a local `.env` file located next to the executable, making the tool portable across any GitHub account or organization.
 
-The tool supports three runtime modes controlled by whether an instance is already running:
-- **Backup mode** (default) — single backup instance, runs cycles, writes to log.
-- **Log viewer mode** — when an instance is already running, new invocations enter a live log tailing mode with colored console output.
-- **Shutdown mode** — a command-line flag (`--shutdown`) that signals the running instance to exit gracefully.
+The tool uses a **two-process architecture**: a **daemon** process that runs the backup loop headlessly, and one or more **viewer** processes that attach to the daemon's log output for live monitoring. The daemon owns the single-instance mutex. Viewer processes are disposable — closing a viewer terminal does not affect the daemon.
+
+**Runtime modes:**
+- **Daemon mode** (`backup.exe --daemon`) — headless backup process. Owns the mutex. Runs the main backup loop with no console window. All output goes to the log file and toast notifications. Spawned automatically on first double-click or by Task Scheduler.
+- **Viewer mode** (default, no flags) — when the daemon is already running, any invocation enters live log tailing mode with ANSI-colored console output. Viewer processes are disposable — closing the terminal kills only the viewer, not the daemon.
+- **Shutdown mode** (`backup.exe --shutdown`) — signals the running daemon to exit gracefully.
+
+**User interaction:**
+- **Double-click `backup.exe`**: If no daemon is running, spawns the daemon in the background then enters viewer mode. If the daemon is already running, enters viewer mode directly.
+- **Click a toast notification**: Launches `backup.exe` — the daemon is already running, so it enters viewer mode. The user sees live backup progress.
+- **Press `q` in the viewer**: Signals the daemon to shut down gracefully, then the viewer exits.
+- **Close the viewer terminal (X button, Alt+F4)**: Only the viewer process dies. The daemon continues running unaffected. The user can open a new viewer at any time by double-clicking the executable or clicking another toast.
 
 ---
 
@@ -98,11 +106,13 @@ REPOS=repo-one,repo-two,repo-three
 ### 3. Auto-Start Behavior
 
 - The tool starts automatically when the computer boots.
-- **Method:** Windows Task Scheduler. A scheduled task triggers the executable at system startup (runs even if nobody is logged in).
-- The tool runs continuously in the background, executing a backup cycle every **1 hour** (default — configurable via `CYCLE_INTERVAL_SECONDS` in `.env`, see Section 2).
-- After completing a cycle, the tool sleeps for the configured interval, then checks internet connectivity and runs the next cycle.
-- **Background operation:** When launched via Task Scheduler (or with `--background` flag), the tool detaches from its console after initialization using `FreeConsole()`. It continues running with no visible window. Toast notifications remain active as the primary user-visible feedback mechanism.
-- **Foreground operation:** When launched directly from a terminal without `--background`, the tool runs with an attached console. Log entries are printed to the console with ANSI color formatting in addition to being written to the log file.
+- **Method:** Windows Task Scheduler. A scheduled task triggers `backup.exe --daemon` at system startup (runs even if nobody is logged in).
+- The daemon runs continuously in the background, executing a backup cycle every **1 hour** (default — configurable via `CYCLE_INTERVAL_SECONDS` in `.env`, see Section 2).
+- After completing a cycle, the daemon sleeps for the configured interval, then checks internet connectivity and runs the next cycle.
+- **Daemon operation:** The daemon is launched with the `--daemon` flag and uses `CREATE_NO_WINDOW` to run entirely headless. It has no console window — ever. All user-visible feedback comes through toast notifications. Log entries are written only to the log file (no console output in daemon mode).
+- **Viewer access:** At any time, the user can open a viewer by double-clicking `backup.exe` or clicking a toast notification. The viewer attaches to the daemon's log file and shows live output. Closing the viewer does not affect the daemon.
+- **First launch (manual):** When the user double-clicks `backup.exe` and no daemon is running, the first invocation spawns `backup.exe --daemon` as a detached background process, then enters viewer mode. Subsequent double-clicks enter viewer mode directly (the daemon is already running).
+- **Task Scheduler launch:** The scheduled task launches `backup.exe --daemon` directly. No viewer is opened — the daemon runs silently with toasts as the only feedback mechanism. The user can open a viewer later by double-clicking the executable or clicking a toast.
 
 ### 4. Internet Connectivity Check
 
@@ -162,10 +172,10 @@ REPOS=repo-one,repo-two,repo-three
 - Each entry: timestamp, action, repo name (if applicable), status (success/failure), error details (if any).
 - Log file should be appended to, not overwritten. If it grows too large, rotate it (delete the file and start fresh — the log is ephemeral, not an archive).
 
-#### 8b. Console Logging (when terminal is attached)
+#### 8b. Console Logging (viewer mode only)
 
-- When the tool is running with an attached console (foreground mode), log entries are printed to the console **in addition to** being written to the log file.
-- Console output uses ANSI escape codes for color-coded, column-aligned formatting (Windows 10+ supports VT100 via `SetConsoleMode` with `ENABLE_VIRTUAL_TERMINAL_PROCESSING`).
+- Console output is available only in **viewer mode**. The daemon has no console and writes log entries only to the log file.
+- Viewer processes print log entries to their console with ANSI color-coded, column-aligned formatting (Windows 10+ supports VT100 via `SetConsoleMode` with `ENABLE_VIRTUAL_TERMINAL_PROCESSING`).
 - Color scheme:
   - `INFO` → dim white / gray
   - `OK` / `SUCCESS` → bright green
@@ -181,7 +191,7 @@ REPOS=repo-one,repo-two,repo-three
 [2026-06-04 05:00:14]  INFO   │ main       │ CYCLE_START │ Starting backup cycle for 6 repositories
 [2026-06-04 05:00:18]  OK     │ backup     │ my-repo     │ BACKED_UP   │ Downloaded 142KB in 3.2s
 ```
-- In background mode (detached console), console output is suppressed. Only toasts and the log file remain active.
+- The daemon has no console — only toasts and the log file remain active as feedback mechanisms. Viewer processes show live log output when opened.
 
 ### 9. Notifications (Windows Toasts)
 
@@ -195,51 +205,69 @@ REPOS=repo-one,repo-two,repo-three
   - **Cycle complete:** "Backup cycle complete: X succeeded, Y failed" summary toast.
 - **Toast content:** All available information — action, repo name (if applicable), status (success/failure), timestamp, error details (if applicable).
 - **Toast duration:** Standard Windows auto-dismiss behavior. No persistent/to-click-dismiss toasts.
-- **Implementation:** Windows native toast notification API. The tool runs as a background scheduled task with no console window — toasts are the primary user-visible feedback mechanism in background mode.
+- **Toast click interaction:** Clicking a toast notification launches `backup.exe` (with no flags). Since the daemon is always running when toasts are fired, the mutex already exists and the new process enters **viewer mode** — the user sees a live log tail of backup activity. The viewer is disposable — closing it does not affect the daemon.
+- **Implementation:** Windows native toast notification API via PowerShell bridge. The PowerShell toast script registers an `Activated` event handler that invokes `Start-Process` to launch `backup.exe` when the user clicks the toast. The daemon runs as a headless background process — toasts are the primary user-visible feedback mechanism.
 
-### 10. Single-Instance and Log Viewer
+### 10. Two-Process Architecture (Daemon + Viewer)
+
+The tool uses a two-process model to solve the fundamental Windows constraint that closing a console window always terminates the owning process (the OS sends `CTRL_CLOSE_EVENT`, which cannot be intercepted to prevent process termination). By separating the backup worker from the user-facing console into two processes, the daemon survives terminal closure.
 
 #### 10a. Instance Detection
 
-- At startup, the tool attempts to create a named Windows mutex (e.g., `Global\GitHubBackupMutex`).
-- If the mutex is created successfully → no other instance is running → enter **backup mode** (normal operation).
-- If the mutex already exists (ERROR_ALREADY_EXISTS) → another instance is running → enter **log viewer mode**.
+- At startup, the tool attempts to create a named Windows mutex (`Global\GitHubBackupMutex`).
+- **If `--daemon` flag is set:** The tool must create the mutex to proceed. If the mutex already exists, another daemon is running — the new daemon exits immediately with an error message.
+- **If no flags (default):**
+  - If the mutex is created successfully — no daemon is running. The tool spawns `backup.exe --daemon` as a detached background process (via `CreateProcess` with `CREATE_NO_WINDOW`), releases the mutex, then enters **viewer mode**.
+  - If the mutex already exists — the daemon is running. The tool enters **viewer mode** directly.
+- The daemon process owns the mutex for its entire lifetime. Viewer processes never own the mutex.
 
-#### 10b. Backup Mode (normal operation)
+#### 10b. Daemon Mode (`backup.exe --daemon`)
 
-- The tool runs the full startup sequence (config parsing, log init, network init) and enters the main backup loop.
-- If launched with a console attached, pretty console output is active.
-- If launched with `--background` flag or via Task Scheduler, the console is detached after startup via `FreeConsole()`.
-- The mutex is held for the entire lifetime of the process.
+- The daemon is the headless backup worker. It runs the full startup sequence (COM init, config parsing, log init, network init) and enters the main backup loop.
+- The daemon is launched with `CREATE_NO_WINDOW` — it never has a console window attached. All log output goes to the log file only. Toast notifications provide user-visible feedback.
+- The daemon creates and owns the single-instance mutex (`Global\GitHubBackupMutex`). Only one daemon can run at a time.
+- The daemon creates the shutdown event (`Global\GitHubBackupShutdown`) and polls it during sleep intervals.
+- The daemon runs until: (a) the shutdown event is signaled (by a viewer pressing `q` or by `--shutdown`), (b) an unrecoverable error occurs (corrupt `.env`), or (c) the process is terminated externally (`taskkill`).
+- The daemon does not respond to `Ctrl+C` (it has no console). Only the named shutdown event can stop it gracefully.
 
-#### 10c. Log Viewer Mode
+#### 10c. Viewer Mode (default, no flags)
 
-- When a second instance detects the mutex, it enters log viewer mode instead of starting a backup.
-- The log viewer opens `{BACKUP_DIR}backup.log`, seeks to the current end of the file, and tails new entries as they are written by the running backup instance.
-- Each tailed entry is printed to the console with the same ANSI color formatting as backup mode (Section 8b).
-- The log viewer does NOT show historical log entries — only new entries that appear after the viewer starts.
-- `Ctrl+C` in the log viewer exits the viewer. The backup instance continues running unaffected.
+- Viewer processes are disposable console windows that tail the daemon's log file. Multiple viewers can be open simultaneously.
+- The viewer opens `{BACKUP_DIR}backup.log`, seeks to the current end of the file, and tails new entries as they are written by the daemon.
+- Each tailed entry is printed to the console with ANSI color formatting (Section 8b).
+- The viewer does NOT show historical log entries — only new entries that appear after the viewer starts.
+- **Closing the viewer** (X button, Alt+F4, Task Manager): Only the viewer process dies. The daemon continues running unaffected. The user can open a new viewer at any time.
+- **`Ctrl+C` in the viewer:** Closes the viewer only. Does NOT signal daemon shutdown. The daemon continues running.
+- **`q` key in the viewer:** Signals the daemon to shut down gracefully (see Section 11). After signaling, the viewer waits briefly for the daemon to exit, then the viewer exits too.
+- The viewer displays a startup banner indicating it is in viewer mode, with a hint: "Press 'q' to shutdown the backup daemon. Close this window to disconnect (daemon keeps running)."
 
 ### 11. Shutdown Mechanism
 
-The running backup instance can be shut down gracefully via two methods:
+The daemon can be shut down gracefully via two methods. In both cases, the daemon finishes the current repository download (if in progress), writes the cycle summary, closes the log file, releases the mutex, and exits.
 
-#### 11a. Command-Line Flag
+#### 11a. `q` Key (in viewer mode)
+
+- Pressing `q` in any viewer process signals the daemon to shut down gracefully.
+- Implementation: the viewer opens the named shutdown event (`Global\GitHubBackupShutdown`) and sets it. The daemon's sleep-with-shutdown-polling loop detects the event and exits cleanly.
+- After signaling, the viewer waits briefly (up to 5 seconds) for the daemon to exit, then the viewer exits too.
+- This is the primary user-facing shutdown method — no command-line needed.
+
+#### 11b. Command-Line Flag
 
 ```
 backup.exe --shutdown
 ```
 
-- When invoked with `--shutdown`, the tool does not start a backup or log viewer.
-- Instead, it signals the running instance to exit gracefully.
-- Implementation: the running instance creates a named event (e.g., `Global\GitHubBackupShutdown`). The `--shutdown` invocation opens this event and sets it. The backup loop checks the event on each iteration and exits cleanly if signaled.
-- Graceful shutdown means: finish the current repo download (if in progress), write cycle summary, close log file, release mutex, and exit.
+- When invoked with `--shutdown`, the tool does not start a daemon or viewer.
+- Instead, it opens the named shutdown event (`Global\GitHubBackupShutdown`) and sets it, signaling the daemon to exit gracefully.
+- If no daemon is running (mutex does not exist), the command prints "No backup daemon is running." and exits.
+- This method is useful for scripted shutdown (e.g., from Task Scheduler, deployment scripts, or remote administration).
 
-#### 11b. Ctrl+C (when in backup mode with console)
+#### 11c. Methods that do NOT shut down the daemon
 
-- If the tool is running in foreground mode (console attached, no `--background`), `Ctrl+C` triggers graceful shutdown.
-- SIGINT handler sets a shutdown flag. The main loop checks the flag at the start of each cycle (not mid-download).
-- If a download is in progress, it completes before shutdown occurs.
+- **Closing the viewer terminal (X button, Alt+F4):** Kills only the viewer process. The daemon continues running.
+- **`Ctrl+C` in the viewer:** Kills only the viewer process. The daemon continues running.
+- **`taskkill /IM backup.exe /F`:** Force-kills ALL backup.exe processes (daemon + all viewers). Use only as a last resort — the daemon does not shut down gracefully.
 
 ### 12. Source Update Tool (`update.ps1`)
 

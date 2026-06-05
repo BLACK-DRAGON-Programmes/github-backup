@@ -182,8 +182,6 @@ int atomic_write(const char *temp_path, const char *final_path) {
 backup_result backup_single_repo(const char *owner, const char *repo,
                                  const char *token,
                                  const backup_config *config) {
-    fprintf(stderr, "[DBG] backup: === Starting backup for '%s' ===\n", repo);
-    fflush(stderr);
 
     char branch[MAX_REPO_NAME_LEN] = {0};
     /*
@@ -196,10 +194,14 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     char final_path[MAX_PATH_BUF] = {0};
     char detail[MAX_URL_LEN];
 
-    log_event(LOG_INFO, "backup", repo, "START",
-              "Beginning backup for repository");
+    fprintf(stderr, "[DBG] backup: === Starting backup for '%s' ===\n", repo);
+    fflush(stderr);
+
     fprintf(stderr, "[DBG] backup: Resolving default branch for %s/%s...\n", owner, repo);
     fflush(stderr);
+
+    log_event(LOG_INFO, "backup", repo, "START",
+              "Beginning backup for repository");
 
     /*
      * Step 1: Resolve the default branch.
@@ -233,6 +235,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     snprintf(detail, sizeof(detail),
              "Default branch: %s — downloading zip archive", branch);
     log_event(LOG_INFO, "backup", repo, "OK", detail);
+
     fprintf(stderr, "[DBG] backup: Branch='%s' — constructing paths...\n", branch);
     fflush(stderr);
 
@@ -269,6 +272,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
      * Step 3: Download the zip archive to the temporary file.
      * The download streams directly to disk — no memory buffering.
      */
+
     fprintf(stderr, "[DBG] backup: Downloading zip to %s\n", temp_path);
     fflush(stderr);
 
@@ -292,6 +296,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
      * Step 4: Verify the downloaded file.
      * Check that it exists, is non-zero in size, and is readable.
      */
+
     fprintf(stderr, "[DBG] backup: Verifying downloaded file at %s...\n", temp_path);
     fflush(stderr);
 
@@ -307,6 +312,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
      * Step 5: Atomic write — delete old backup, rename new.
      * At no point does the repo have zero valid backups.
      */
+
     fprintf(stderr, "[DBG] backup: Atomic write: %s -> %s\n", temp_path, final_path);
     fflush(stderr);
 
@@ -328,6 +334,7 @@ backup_result backup_single_repo(const char *owner, const char *repo,
              "Backup completed successfully (branch: %s)", branch);
     log_event(LOG_SUCCESS, "backup", repo, "OK", detail);
     toast_success(repo, "Backup completed successfully");
+
     fprintf(stderr, "[DBG] backup: === '%s' BACKUP COMPLETE ===\n", repo);
     fflush(stderr);
 
@@ -341,11 +348,12 @@ backup_result backup_single_repo(const char *owner, const char *repo,
 
 int run_backup_cycle(const backup_config *config,
                      int *succeeded, int *failed) {
-    fprintf(stderr, "[DBG] backup: === CYCLE START — %d repos ===\n", config->repo_count);
-    fflush(stderr);
 
     *succeeded = 0;
     *failed = 0;
+
+    fprintf(stderr, "[DBG] backup: === CYCLE START — %d repos ===\n", config->repo_count);
+    fflush(stderr);
 
     int cycle_aborted = 0;
 

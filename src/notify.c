@@ -9,7 +9,17 @@
  *
  * Each toast function also logs the event through the logger module for
  * dual output. Toasts are the primary user-visible feedback mechanism in
- * background mode (Task Scheduler / FreeConsole).
+ * daemon mode (headless background process).
+ *
+ * Toast click interaction (Spec Section 9):
+ *   Clicking a toast notification launches backup.exe with no flags.
+ *   Since the daemon is always running when toasts are fired, the mutex
+ *   already exists and the new process enters viewer mode — the user
+ *   sees a live log tail of backup activity.
+ *
+ * Implementation: The PowerShell script registers an Activated event
+ * handler on the toast notification. When the user clicks the toast,
+ * the handler invokes Start-Process to launch backup.exe.
  *
  * COM threading model: Single-Threaded Apartment (STA), required by
  * the Windows Runtime toast API.
@@ -63,12 +73,17 @@ static void xml_escape(const char *in, char *out, int max_len) {
  * Show a Windows toast notification via PowerShell bridge.
  *
  * Writes a temporary .ps1 file that uses the WinRT toast API to display
- * a notification, then executes it via CreateProcessW with CREATE_NO_WINDOW.
- * The process runs asynchronously — we fire and forget without waiting.
+ * a notification with an Activated event handler, then executes it via
+ * CreateProcessW with CREATE_NO_WINDOW. The process runs asynchronously —
+ * we fire and forget without waiting.
  *
- * The temp .ps1 file is cleaned up after the process completes. Since we
- * don't wait, we rely on the temp directory cleanup mechanisms. In practice,
- * the file is only a few hundred bytes and Windows cleans %TEMP% periodically.
+ * The temp .ps1 file is cleaned up after the process completes.
+ *
+ * Toast click behavior (Spec Section 9):
+ *   The PowerShell script registers an Activated event handler via
+ *   ToastNotification.Add_Activated(). When the user clicks the toast,
+ *   the handler invokes Start-Process to launch backup.exe (no flags).
+ *   The new process detects the daemon's mutex and enters viewer mode.
  *
  * @param title   Toast title text
  * @param message Toast body text
@@ -102,26 +117,51 @@ static void show_toast_powershell(const char *title, const char *message) {
              temp_dir, (unsigned long)GetCurrentProcessId());
 
     /*
+     * Get the path to the current executable.
+     * The toast click handler will launch this executable to enter viewer mode.
+     */
+    char exe_path[MAX_PATH_BUF];
+    DWORD exe_len = GetModuleFileNameA(NULL, exe_path, MAX_PATH_BUF);
+    if (exe_len == 0 || exe_len >= MAX_PATH_BUF) {
+        return;
+    }
+
+    /*
+     * Escape the exe path for PowerShell single-quoted strings.
+     * Single-quoted strings treat everything as literal EXCEPT single
+     * quotes themselves — those must be doubled ('').
+     */
+    char ps_exe_path[MAX_PATH_BUF];
+    int j = 0;
+    for (DWORD k = 0; k < exe_len && j < (int)sizeof(ps_exe_path) - 2; k++) {
+        if (exe_path[k] == '\'') {
+            ps_exe_path[j++] = '\'';
+            ps_exe_path[j++] = '\'';
+        } else {
+            ps_exe_path[j++] = exe_path[k];
+        }
+    }
+    ps_exe_path[j] = '\0';
+
+    /*
      * Write the PowerShell script.
      * Uses WinRT toast API via [Windows.UI.Notifications] types.
      *
-     * Critical requirements for desktop app toasts (researched):
+     * Critical requirements for desktop app toasts:
      *   1. AppUserModelID MUST be the pre-registered PowerShell AUMID.
-     *      A made-up string like 'GitHub Backup' causes SILENT failure —
-     *      no error, no notification. The PowerShell AUMID is guaranteed to
-     *      exist on all Windows 10/11 installations.
-     *   2. Template MUST be ToastGeneric. ToastText02 is deprecated and
-     *      may not render on newer Windows builds.
-     *   3. Audio silent="true" prevents the default notification sound.
+     *   2. Template MUST be ToastGeneric.
+     *   3. Audio silent="true" prevents default notification sound.
      *   4. Duration="short" gives auto-dismiss behavior matching spec.
      *
-     * Implementation note: The XML is built using PowerShell single-quoted
-     * strings. Single-quoted strings in PowerShell treat all characters as
-     * literal — no escaping needed for double-quotes inside them. This avoids
-     * complex C escape sequences (\\\" \\\"  multi-line concatenation) that
-     * caused compilation errors in previous versions. The xml_escape function
-     * converts ' to &apos; so title/message never contain raw single quotes
-     * that would break the PowerShell string delimiters.
+     * Toast click interaction (Spec Section 9):
+     *   The script registers an Activated event handler via
+     *   $toast.Add_Activated(). When the user clicks the toast,
+     *   the handler calls Start-Process to launch backup.exe.
+     *   The new process enters viewer mode (mutex already exists).
+     *
+     * The event is registered BEFORE Show() and the script waits
+     * for toast dismissal/activation before exiting. This ensures
+     * the handler has time to fire if the user clicks quickly.
      */
     FILE *fp = fopen(ps1_path, "w");
     if (!fp) return;
@@ -142,9 +182,31 @@ static void show_toast_powershell(const char *title, const char *message) {
         "    $xml.LoadXml($toastXml)\n"
         "    $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)\n"
         "    $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($APP_ID)\n"
+        "    $EXE_PATH = '%s'\n"
+        "    $clicked = $false\n"
+        "    $handler = [Windows.UI.Notifications.ToastActivatedEventHandler]::new({\n"
+        "        param($sender, $e)\n"
+        "        $script:clicked = $true\n"
+        "        try { Start-Process -FilePath $EXE_PATH -WindowStyle Normal } catch { }\n"
+        "    })\n"
+        "    $toast.add_Activated($handler)\n"
+        "    $dismissed = [Windows.UI.Notifications.ToastNotificationEventHandler]::new({\n"
+        "        param($sender, $e)\n"
+        "        $script:clicked = $true\n"
+        "    })\n"
+        "    $toast.add_Dismissed($dismissed)\n"
+        "    $failed = [Windows.UI.Notifications.ToastFailedEventHandler]::new({\n"
+        "        param($sender, $e)\n"
+        "        $script:clicked = $true\n"
+        "    })\n"
+        "    $toast.add_Failed($failed)\n"
         "    $notifier.Show($toast)\n"
+        "    $timeout = [System.DateTime]::Now.AddSeconds(10)\n"
+        "    while (-not $clicked -and [System.DateTime]::Now -lt $timeout) {\n"
+        "        Start-Sleep -Milliseconds 100\n"
+        "    }\n"
         "} catch { }\n",
-        safe_title, safe_message);
+        safe_title, safe_message, ps_exe_path);
 
     fclose(fp);
 
@@ -203,8 +265,6 @@ static void show_toast_powershell(const char *title, const char *message) {
 
     /*
      * Delete the temp script AFTER the PowerShell process has finished.
-     * This eliminates the race condition that existed when we deleted
-     * immediately after CreateProcessW.
      */
     remove(ps1_path);
 }
@@ -212,24 +272,20 @@ static void show_toast_powershell(const char *title, const char *message) {
 
 int notify_init(void) {
     fprintf(stderr, "[DBG] notify: Initializing COM (STA)...\n");
-    fflush(stderr);
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
         fprintf(stderr, "[DBG] notify: COM init FAILED (hr=0x%lx)\n", (unsigned long)hr);
-        fflush(stderr);
         log_error("notify", NULL, "COM initialization failed");
         return -1;
     }
     g_com_initialized = 1;
     fprintf(stderr, "[DBG] notify: COM initialized successfully\n");
-    fflush(stderr);
     return 0;
 }
 
 
 void toast_info(const char *title, const char *message) {
     fprintf(stderr, "[DBG] notify: [INFO]  '%s' — '%s'\n", title, message);
-    fflush(stderr);
     log_event(LOG_INFO, "toast", NULL, "INFO", message);
     #ifdef _WIN32
     show_toast_powershell(title, message);
@@ -239,7 +295,6 @@ void toast_info(const char *title, const char *message) {
 
 void toast_success(const char *repo, const char *message) {
     fprintf(stderr, "[DBG] notify: [OK]     '%s' — '%s'\n", repo, message);
-    fflush(stderr);
     log_event(LOG_SUCCESS, "toast", repo, "OK", message);
     #ifdef _WIN32
     char title[512];
@@ -251,7 +306,6 @@ void toast_success(const char *repo, const char *message) {
 
 void toast_error(const char *title, const char *message) {
     fprintf(stderr, "[DBG] notify: [ERROR] '%s' — '%s'\n", title, message);
-    fflush(stderr);
     log_event(LOG_ERROR, "toast", NULL, "FAILED", message);
     #ifdef _WIN32
     show_toast_powershell(title, message);
@@ -260,9 +314,8 @@ void toast_error(const char *title, const char *message) {
 
 
 void notify_cleanup(void) {
-    fprintf(stderr, "[DBG] notify: Cleanup — CoUninitialize\n");
-    fflush(stderr);
     if (g_com_initialized) {
+        fprintf(stderr, "[DBG] notify: Cleanup — CoUninitialize\n");
         CoUninitialize();
         g_com_initialized = 0;
     }

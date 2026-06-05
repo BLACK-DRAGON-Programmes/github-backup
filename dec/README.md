@@ -19,3 +19,5 @@ NNN.md
 | `003.md` | Log rotation — delete and restart |
 | `004.md` | Adding Windows toast notifications for all runtime events |
 | `005.md` | Using temp-file-then-rename pattern for backup file integrity |
+| `006.md` | Single-instance, log viewer, shutdown, ANSI console, background mode |
+| `007.md` | Two-process architecture (daemon + viewer) |
