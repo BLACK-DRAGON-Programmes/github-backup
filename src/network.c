@@ -203,6 +203,7 @@ int check_connectivity(int timeout_ms) {
     if (h_connect == NULL) {
         DWORD err = GetLastError();
         DBG("check_connectivity: WinHttpConnect FAILED (error %lu)", err);
+        (void)err;
         log_event(LOG_WARNING, "network", NULL, "FAILED",
                   "Connectivity check failed - cannot reach github.com");
         return 0;
@@ -221,6 +222,7 @@ int check_connectivity(int timeout_ms) {
     if (h_request == NULL) {
         DWORD err = GetLastError();
         DBG("check_connectivity: WinHttpOpenRequest FAILED (error %lu)", err);
+        (void)err;
         WinHttpCloseHandle(h_connect);
         return 0;
     }
@@ -297,6 +299,7 @@ int http_get(const char *url, const char *token,
     if (h_connect == NULL) {
         DWORD err = GetLastError();
         DBG("http_get: WinHttpConnect FAILED (error %lu)", err);
+        (void)err;
         log_error("network", NULL,
                   "WinHttpConnect to api.github.com failed");
         return -1;
@@ -361,6 +364,7 @@ int http_get(const char *url, const char *token,
     if (h_request == NULL) {
         DWORD err = GetLastError();
         DBG("http_get: WinHttpOpenRequest FAILED (error %lu)", err);
+        (void)err;
         log_error("network", NULL,
                   "WinHttpOpenRequest failed");
         WinHttpCloseHandle(h_connect);
@@ -441,6 +445,9 @@ int http_get(const char *url, const char *token,
     if (!WinHttpReceiveResponse(h_request, NULL)) {
         DWORD err = GetLastError();
         DBG("http_get: WinHttpReceiveResponse FAILED (error %lu)", err);
+        char err_detail[128];
+        snprintf(err_detail, sizeof(err_detail),
+                 "WinHttpReceiveResponse failed (error code: %lu)", err);
         log_error("network", NULL, err_detail);
         WinHttpCloseHandle(h_request);
         WinHttpCloseHandle(h_connect);
@@ -916,6 +923,7 @@ int download_repo_zip(const char *owner, const char *repo,
     if (h_request == NULL) {
         DWORD err = GetLastError();
         DBG("download_repo_zip: WinHttpOpenRequest FAILED (error %lu)", err);
+        (void)err;
         log_error("network", repo,
                   "WinHttpOpenRequest failed for zip download");
         WinHttpCloseHandle(h_connect);

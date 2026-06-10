@@ -43,6 +43,8 @@
  * ((void)0) - the compiler eliminates all debug output completely.
  * ================================================================ */
 
+#define DBG_ENABLED  /* Single toggle: comment out to disable ALL debug output */
+
 #ifdef DBG_ENABLED
 
 /**
