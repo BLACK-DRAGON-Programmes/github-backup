@@ -181,7 +181,4 @@ Write-Host "  Updated: $UpdatedCount files" -ForegroundColor White
 Write-Host "  Skipped (protected): $SkippedCount files (.env, .git, *.exe, *.zip, *.log, update.ps1)" -ForegroundColor Gray
 Write-Host ""
 Write-Host "Ready to compile:" -ForegroundColor Yellow
-Write-Host "  gcc -Wall -Wextra -O2 -static -o backup.exe" -ForegroundColor DarkGray
-Write-Host "    src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c" -ForegroundColor DarkGray
-Write-Host "    -I src/ -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE" -ForegroundColor DarkGray
-Write-Host "    -lwinhttp -lkernel32 -lshell32 -lole32 -lruntimeobject -lshlwapi" -ForegroundColor DarkGray
+Write-Host "  gcc -Wall -Wextra -O2 -static -o backup.exe src/main.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c src/console.c -I src/ -D_WIN32_WINNT=0x0600 -DUNICODE -D_UNICODE -lwinhttp -lkernel32 -lshell32 -lole32 -lruntimeobject -lshlwapi" -ForegroundColor DarkGray
