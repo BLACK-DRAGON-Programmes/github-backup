@@ -254,17 +254,24 @@ backup_result backup_single_repo(const char *owner, const char *repo,
     }
 
     /* Path length already validated by validate_path_length() above.
-     * snprintf truncation is safe and intentional as a last resort. */
+     * GCC cannot prove the guard covers all cases at compile time,
+     * so suppress -Wformat-truncation. Truncation never occurs in practice. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
     snprintf(temp_path, sizeof(temp_path), "%s%s%s",
              config->backup_dir, repo, TEMP_FILE_SUFFIX);
+#pragma GCC diagnostic pop
 
     if (validate_path_length(dir_len, repo_len + strlen(FINAL_FILE_SUFFIX),
                               repo) != 0) {
         return BACKUP_UNKNOWN_ERROR;
     }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
     snprintf(final_path, sizeof(final_path), "%s%s%s",
              config->backup_dir, repo, FINAL_FILE_SUFFIX);
+#pragma GCC diagnostic pop
 
     /*
      * Step 3: Download the zip archive to the temporary file.

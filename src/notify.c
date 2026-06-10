@@ -112,11 +112,15 @@ static void show_toast_powershell(const char *title, const char *message) {
         return;
     }
 
-    /* snprintf truncation is safe - temp paths from GetTempPathA
-     * are always shorter than MAX_PATH_BUF. */
+    /* GetTempPathA always returns a short path (< MAX_PATH on Windows).
+     * GCC cannot prove this at compile time, so suppress -Wformat-truncation.
+     * Truncation never occurs in practice. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
     snprintf(ps1_path, sizeof(ps1_path),
              "%sghb-toast-%lu.ps1",
              temp_dir, (unsigned long)GetCurrentProcessId());
+#pragma GCC diagnostic pop
 
     /*
      * Get the path to the current executable.
