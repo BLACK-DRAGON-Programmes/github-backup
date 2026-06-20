@@ -416,6 +416,7 @@ int run_backup_cycle(ghb_context *ctx, const backup_config *config,
     DBG("backup: === CYCLE START - %d repos ===", config->repo_count);
 
     int cycle_aborted = 0;
+    int abort_due_to_shutdown = 0;
 
     for (int i = 0; i < config->repo_count; i++) {
         const char *repo = config->repos[i];
@@ -468,6 +469,7 @@ int run_backup_cycle(ghb_context *ctx, const backup_config *config,
                  */
                 (*failed)++;
                 cycle_aborted = 1;
+                abort_due_to_shutdown = 1;
                 break;
 
             case BACKUP_RATE_LIMITED:
@@ -481,15 +483,23 @@ int run_backup_cycle(ghb_context *ctx, const backup_config *config,
         }
 
         /*
-         * If the cycle was aborted (disk full), stop processing
-         * remaining repos. The previous backup for the current
-         * repo is still intact.
+         * If the cycle was aborted, stop processing remaining repos.
+         * The previous backup for the current repo is still intact.
+         * Distinguish shutdown (user pressed 'q') from disk full —
+         * different toast messages so the operator knows what happened.
          */
         if (cycle_aborted) {
-            ctx->logger->log_event(ctx, LOG_ERROR, "backup", NULL, "ABORTED",
-                      "Cycle aborted - disk full or critical error");
-            ctx->notify->toast_error(ctx, "Cycle Aborted",
-                        "Backup cycle stopped due to disk full");
+            if (abort_due_to_shutdown) {
+                ctx->logger->log_event(ctx, LOG_INFO, "backup", NULL, "ABORTED",
+                          "Cycle aborted - shutdown requested");
+                ctx->notify->toast_info(ctx, "Shutdown",
+                            "Backup cycle aborted - shutdown requested");
+            } else {
+                ctx->logger->log_event(ctx, LOG_ERROR, "backup", NULL, "ABORTED",
+                          "Cycle aborted - disk full or critical error");
+                ctx->notify->toast_error(ctx, "Cycle Aborted",
+                            "Backup cycle stopped due to disk full");
+            }
             break;
         }
     }
