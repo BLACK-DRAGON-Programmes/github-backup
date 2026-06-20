@@ -20,10 +20,10 @@
  * When defined: DBG() writes to stderr AND the log file.
  * When commented out: DBG() compiles to nothing, zero overhead.
  */
-#define DBG_ENABLED
+#define DBG_ENABLED  /* DEV PHASE: enabled until spec is 100% covered. Comment out for production. */
 
-#include "console.h"
 #include "logger.h"
+#include "context.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -42,9 +42,6 @@ static FILE *g_log_file = NULL;
 
 /** Path to the current log file (needed for rotation reopen). */
 static char g_log_path[MAX_URL_LEN] = {0};
-
-/** Whether to also print log entries to the console with ANSI colors. */
-static int g_console_output = 0;
 
 
 /* ─── Timestamp ──────────────────────────────────────────────── */
@@ -78,7 +75,8 @@ static const char *level_string(log_level level) {
 
 /* ─── Public Functions ──────────────────────────────────────── */
 
-int log_init(const char *log_path) {
+int log_init(ghb_context *ctx, const char *log_path) {
+    (void)ctx;
     strncpy(g_log_path, log_path, MAX_URL_LEN - 1);
     g_log_path[MAX_URL_LEN - 1] = '\0';
 
@@ -97,8 +95,9 @@ int log_init(const char *log_path) {
 }
 
 
-void log_event(log_level level, const char *action, const char *repo,
+void log_event(ghb_context *ctx, log_level level, const char *action, const char *repo,
                const char *status, const char *detail) {
+    (void)ctx;
     if (g_log_file == NULL) {
         return;
     }
@@ -106,10 +105,10 @@ void log_event(log_level level, const char *action, const char *repo,
     char timestamp[20];
     get_timestamp(timestamp, sizeof(timestamp));
 
-    fprintf(g_log_file, "[%s] %s | %s", timestamp, level_string(level), action);
+    fprintf(g_log_file, "[%s]  %-6s | %s", timestamp, level_string(level), action);
 
     if (repo != NULL) {
-        fprintf(g_log_file, " | %s", repo);
+        fprintf(g_log_file, " | %-12s", repo);
     }
 
     fprintf(g_log_file, " | %s", status);
@@ -125,27 +124,25 @@ void log_event(log_level level, const char *action, const char *repo,
      * Controlled by DBG_ENABLED — comment out DBG_ENABLED in this file
      * and recompile to eliminate all debug output including this block. */
 #ifdef DBG_ENABLED
-    fprintf(stderr, "[%s] %s | %s", timestamp, level_string(level), action);
-    if (repo != NULL) fprintf(stderr, " | %s", repo);
+    fprintf(stderr, "[%s]  %-6s | %s", timestamp, level_string(level), action);
+    if (repo != NULL) fprintf(stderr, " | %-12s", repo);
     fprintf(stderr, " | %s", status);
     if (detail != NULL) fprintf(stderr, " | %s", detail);
     fprintf(stderr, "\n");
     fflush(stderr);
 #endif
 
-    /* Bridge to ANSI console output when available */
-    if (g_console_output) {
-        console_print_log(level, action, repo, status, detail);
-    }
 }
 
 
-void log_error(const char *action, const char *repo, const char *detail) {
-    log_event(LOG_ERROR, action, repo, "FAILED", detail);
+void log_error(ghb_context *ctx, const char *action, const char *repo, const char *detail) {
+    (void)ctx;
+    log_event(ctx, LOG_ERROR, action, repo, "FAILED", detail);
 }
 
 
-void rotate_log(long max_size_bytes) {
+void rotate_log(ghb_context *ctx, long max_size_bytes) {
+    (void)ctx;
     if (max_size_bytes <= 0) {
         return;  /* Rotation disabled */
     }
@@ -204,14 +201,6 @@ void rotate_log(long max_size_bytes) {
 }
 
 
-void log_set_console_output(int enabled) {
-    g_console_output = enabled;
-}
-
-int log_get_console_output(void) {
-    return g_console_output;
-}
-
 
 #ifdef DBG_ENABLED
 
@@ -243,7 +232,8 @@ void log_debug(const char *fmt, ...) {
 #endif /* DBG_ENABLED */
 
 
-void log_close(void) {
+void log_close(ghb_context *ctx) {
+    (void)ctx;
     if (g_log_file != NULL && g_log_file != stderr) {
         fflush(g_log_file);
         fclose(g_log_file);

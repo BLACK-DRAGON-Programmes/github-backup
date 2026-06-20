@@ -282,14 +282,14 @@ If step 2 fails, delete `.zip.tmp` and skip. Old backup untouched. If disk full 
 
 | # | File | Type | Dependencies |
 |---|------|------|--------------|
-| 7.1 | `docs/build-instructions.md` | Documentation | All source files |
+| 7.1 | `docs/compile.md` | Documentation | All source files |
 | 7.2 | `docs/nasm-notes.md` | Documentation | All source files |
 
 **Rationale:** Build instructions are written after all source files exist because they must reference actual file names, include commands, and describe the exact compilation sequence. Writing them earlier would require guessing at the final file list and compilation flags.
 
 NASM translation notes are written last because they document how each C construct in the completed codebase maps to NASM x86-64. These notes are a reference for the eventual NASM rewrite — they cannot be written until the C code they are translating exists.
 
-**What `build-instructions.md` contains:**
+**What `compile.md` contains:**
 - Prerequisites (MinGW-w64, Windows SDK)
 - File list and purpose
 - Compilation command (`gcc` flags, link libraries: `winhttp`, `kernel32`, `shlwapi`)
@@ -334,7 +334,7 @@ This is the definitive sequence in which files will be written. Each entry is wr
 | 17 | 5 | `src/backup.c` | constants.h, backup.h, config, network, logger, notify |
 | 18 | 5 | `tests/test_backup.c` | constants.h, backup.h, config.h, network.h |
 | 19 | 6 | `src/main.c` | all modules |
-| 20 | 7 | `docs/build-instructions.md` | all source files |
+| 20 | 7 | `docs/compile.md` | all source files |
 | 21 | 7 | `docs/nasm-translation-notes.md` | all source files |
 
 **Total: 21 files** (including 2 already existing decisions: 004, 005; and 1 already existing doc: flow.md)

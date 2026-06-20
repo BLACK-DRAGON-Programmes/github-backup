@@ -26,8 +26,8 @@
  */
 
 #include "notify.h"
-#include "logger.h"
-#include "console.h"
+#include "context.h"
+#include "logger.h"  /* DBG macro — compile-time debug toggle, not a DI call */
 
 #ifdef _WIN32
 
@@ -36,201 +36,178 @@
 #include <stdlib.h>
 #include <windows.h>
 #include <ole2.h>
+#include <shlobj.h>
+#include <shlwapi.h>
 
 #ifdef _MSC_VER
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
 #endif
 
+/** Custom AUMID for toast notifications (registered at runtime).
+ * Per MS docs, desktop apps must register an AUMID under
+ * HKCU\Software\Classes\AppUserModelId\ for toasts to appear.
+ * Using PowerShell's built-in AUMID only works if the PS Start Menu
+ * shortcut exists — unreliable. Custom AUMID is self-contained. */
+#define TOAST_AUMID "GitHubBackup.Toast"
+#define TOAST_DISPLAY_NAME "GitHub Backup"
+
 
 /** Track whether COM was successfully initialized. */
 static int g_com_initialized = 0;
 
+/** Track whether the custom AUMID has been registered. */
+static int g_aumid_registered = 0;
+
 
 /**
- * Escape a string for safe inclusion in XML attribute values.
- * Converts &, <, >, " and ' to their XML entity equivalents.
- * Output buffer must be at least 6x the input length (worst case: all quotes).
+ * Register a custom AppUserModelID (AUMID) in the Windows registry
+ * so toast notifications appear. Per MS docs, desktop apps MUST
+ * register an AUMID under HKCU\Software\Classes\AppUserModelId\.
+ * Without this, CreateToastNotifier silently drops the toast.
+ *
+ * Needs only standard-user privileges (HKCU). No installer required.
+ * Called once during notify_init().
  */
-static void xml_escape(const char *in, char *out, int max_len) {
-    int i = 0;
-    while (*in && i < max_len - 6) {
-        switch (*in) {
-            case '&':  memcpy(out + i, "&amp;", 5);  i += 5; break;
-            case '<':  memcpy(out + i, "&lt;", 4);   i += 4; break;
-            case '>':  memcpy(out + i, "&gt;", 4);   i += 4; break;
-            case '"':  memcpy(out + i, "&quot;", 6); i += 6; break;
-            case '\'': memcpy(out + i, "&apos;", 6); i += 6; break;
-            default:   out[i++] = *in; break;
-        }
-        in++;
+static void register_toast_aumid(void) {
+    if (g_aumid_registered) return;
+
+    HKEY hKey;
+    char keyPath[256];
+    snprintf(keyPath, sizeof(keyPath),
+             "Software\\Classes\\AppUserModelId\\%s", TOAST_AUMID);
+
+    LONG result = RegCreateKeyExA(HKEY_CURRENT_USER, keyPath, 0, NULL, 0,
+                                  KEY_WRITE, NULL, &hKey, NULL);
+    if (result != ERROR_SUCCESS) {
+        DBG("notify: Failed to create AUMID registry key (error=%ld)", result);
+        return;
     }
-    out[i] = '\0';
+
+    /* DisplayName — shown on the toast and in notification settings */
+    DWORD showInSettings = 1;
+    RegSetValueExA(hKey, "DisplayName", 0, REG_SZ,
+                   (const BYTE *)TOAST_DISPLAY_NAME,
+                   (DWORD)strlen(TOAST_DISPLAY_NAME) + 1);
+    RegSetValueExA(hKey, "ShowInSettings", 0, REG_DWORD,
+                   (const BYTE *)&showInSettings, sizeof(showInSettings));
+
+    RegCloseKey(hKey);
+    g_aumid_registered = 1;
+    DBG("notify: Custom AUMID registered: %s", TOAST_AUMID);
 }
 
 
 /**
- * Show a Windows toast notification via PowerShell bridge.
+ * Show a Windows toast notification via a static PowerShell script.
  *
- * Writes a temporary .ps1 file that uses the WinRT toast API to display
- * a notification with an Activated event handler, then executes it via
- * CreateProcessW with CREATE_NO_WINDOW. The process runs asynchronously -
- * we fire and forget without waiting.
+ * Invokes toasts/show-toast.ps1 (located next to backup.exe) via
+ * powershell.exe -File. The script takes -Title and -Message parameters,
+ * shows the toast, and sleeps 2 seconds (fire-and-forget).
  *
- * The temp .ps1 file is cleaned up after the process completes.
- *
- * Toast click behavior (Spec Section 9):
- *   The PowerShell script registers an Activated event handler via
- *   ToastNotification.Add_Activated(). When the user clicks the toast,
- *   the handler invokes Start-Process to launch backup.exe (no flags).
- *   The new process detects the daemon's mutex and enters viewer mode.
+ * R158 research findings (10 agents + compiled report):
+ *   1. ROOT CAUSE #1: The old -EncodedCommand script used WinRT event
+ *      handlers ([ToastActivatedEventHandler]::new({...})) which silently
+ *      throw on PS 5.1. The try/catch swallowed the error and Show() was
+ *      never reached. The static script has NO event handlers.
+ *   2. ROOT CAUSE #2: CREATE_NEW_CONSOLE was wrong (R88 was empirically
+ *      falsified). Using CREATE_NO_WINDOW per R158-10.
+ *   3. ROOT CAUSE #3: The while/Start-Sleep loop didn't pump the STA COM
+ *      queue. Replaced with a simple Start-Sleep -Seconds 2 (matches the
+ *      working test-toast.ps1 pattern).
+ *   4. -File is more reliable than -EncodedCommand (no encoding round-trip,
+ *      no 32KB limit, real parse errors, not EDR-flagged). R158-02, R158-06.
  *
  * @param title   Toast title text
  * @param message Toast body text
  */
 static void show_toast_powershell(const char *title, const char *message) {
     if (!g_com_initialized) return;
+    if (!g_aumid_registered) register_toast_aumid();
 
     /*
-     * Escape title and message for XML embedding.
-     * The PowerShell script builds an XML template for the toast.
-     */
-    char safe_title[512];
-    char safe_message[1024];
-    xml_escape(title, safe_title, (int)sizeof(safe_title));
-    xml_escape(message, safe_message, (int)sizeof(safe_message));
-
-    /*
-     * Build a temporary .ps1 file path in %TEMP%.
-     * Uses GetCurrentProcessId() for uniqueness so multiple instances
-     * don't collide.
-     */
-    char temp_dir[MAX_PATH_BUF];
-    char ps1_path[MAX_PATH_BUF];
-
-    if (GetTempPathA((DWORD)sizeof(temp_dir), temp_dir) == 0) {
-        return;
-    }
-
-    /* GetTempPathA always returns a short path (< MAX_PATH on Windows).
-     * GCC cannot prove this at compile time, so suppress -Wformat-truncation.
-     * Truncation never occurs in practice. */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat-truncation"
-    snprintf(ps1_path, sizeof(ps1_path),
-             "%sghb-toast-%lu.ps1",
-             temp_dir, (unsigned long)GetCurrentProcessId());
-#pragma GCC diagnostic pop
-
-    /*
-     * Get the path to the current executable.
-     * The toast click handler will launch this executable to enter viewer mode.
+     * Find the toast script — it lives in the toasts/ subdirectory
+     * next to backup.exe. GetModuleFileNameA gives us the exe path;
+     * we strip the exe filename and append "toasts\show-toast.ps1".
      */
     char exe_path[MAX_PATH_BUF];
     DWORD exe_len = GetModuleFileNameA(NULL, exe_path, MAX_PATH_BUF);
     if (exe_len == 0 || exe_len >= MAX_PATH_BUF) {
+        DBG("notify: Cannot get exe path for toast script");
+        return;
+    }
+
+    /* Strip the exe filename to get the directory */
+    char *last_sep = NULL;
+    for (DWORD i = 0; i < exe_len; i++) {
+        if (exe_path[i] == '\\' || exe_path[i] == '/') {
+            last_sep = &exe_path[i];
+        }
+    }
+    if (last_sep == NULL) {
+        DBG("notify: Cannot find directory separator in exe path");
+        return;
+    }
+    *last_sep = '\0';
+
+    char script_path[MAX_PATH_BUF];
+    /* exe_path comes from GetModuleFileNameA which always returns < MAX_PATH.
+     * GCC cannot prove this at compile time, so suppress -Wformat-truncation.
+     * Runtime length check is defense-in-depth (Rule 23/45). */
+    size_t exe_len_str = strlen(exe_path);
+    if (exe_len_str + 24 >= sizeof(script_path)) {
+        DBG("notify: Exe path too long for toast script path");
+        return;
+    }
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+    snprintf(script_path, sizeof(script_path),
+             "%s\\toasts\\show-toast.ps1", exe_path);
+#pragma GCC diagnostic pop
+
+    /* Verify the script exists */
+    DWORD attr = GetFileAttributesA(script_path);
+    if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        DBG("notify: Toast script not found at %s", script_path);
         return;
     }
 
     /*
-     * Escape the exe path for PowerShell single-quoted strings.
-     * Single-quoted strings treat everything as literal EXCEPT single
-     * quotes themselves - those must be doubled ('').
+     * Escape title and message for PowerShell double-quoted parameters.
+     * Double quotes inside the values must be escaped as \" (backslash-quote).
+     * Backslashes themselves are fine in PS double-quoted strings.
      */
-    char ps_exe_path[MAX_PATH_BUF];
-    int j = 0;
-    for (DWORD k = 0; k < exe_len && j < (int)sizeof(ps_exe_path) - 2; k++) {
-        if (exe_path[k] == '\'') {
-            ps_exe_path[j++] = '\'';
-            ps_exe_path[j++] = '\'';
-        } else {
-            ps_exe_path[j++] = exe_path[k];
-        }
+    char safe_title[512];
+    char safe_message[1024];
+    int ti = 0, mi = 0;
+    for (const char *p = title; *p && ti < (int)sizeof(safe_title) - 4; p++) {
+        if (*p == '"') { safe_title[ti++] = '\\'; safe_title[ti++] = '"'; }
+        else { safe_title[ti++] = *p; }
     }
-    ps_exe_path[j] = '\0';
+    safe_title[ti] = '\0';
+
+    for (const char *p = message; *p && mi < (int)sizeof(safe_message) - 4; p++) {
+        if (*p == '"') { safe_message[mi++] = '\\'; safe_message[mi++] = '"'; }
+        else { safe_message[mi++] = *p; }
+    }
+    safe_message[mi] = '\0';
 
     /*
-     * Write the PowerShell script.
-     * Uses WinRT toast API via [Windows.UI.Notifications] types.
+     * Build the command line:
+     *   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+     *     -WindowStyle Hidden -File "<script>" -Title "<title>" -Message "<msg>"
      *
-     * Critical requirements for desktop app toasts:
-     *   1. AppUserModelID MUST be the pre-registered PowerShell AUMID.
-     *   2. Template MUST be ToastGeneric.
-     *   3. Audio silent="true" prevents default notification sound.
-     *   4. Duration="short" gives auto-dismiss behavior matching spec.
-     *
-     * Toast click interaction (Spec Section 9):
-     *   The script registers an Activated event handler via
-     *   $toast.Add_Activated(). When the user clicks the toast,
-     *   the handler calls Start-Process to launch backup.exe.
-     *   The new process enters viewer mode (mutex already exists).
-     *
-     * The event is registered BEFORE Show() and the script waits
-     * for toast dismissal/activation before exiting. This ensures
-     * the handler has time to fire if the user clicks quickly.
+     * -NoProfile: skip user profile (fast startup)
+     * -NonInteractive: no prompts
+     * -ExecutionPolicy Bypass: allow unsigned scripts
+     * -WindowStyle Hidden: no console window flash
+     * -File: run the script file (more reliable than -EncodedCommand)
      */
-    FILE *fp = fopen(ps1_path, "w");
-    if (!fp) return;
-
-    fprintf(fp,
-        "# GitHub Backup toast notification\n"
-        "try {\n"
-        "    [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null\n"
-        "    [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null\n"
-        "    $APP_ID = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'\n"
-        "    $xml = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
-        "    $toastXml = '<toast duration=\"short\">"
-        "<visual><binding template=\"ToastGeneric\">"
-        "<text>%s</text>"
-        "<text>%s</text>"
-        "</binding></visual>"
-        "<audio silent=\"true\"/></toast>'\n"
-        "    $xml.LoadXml($toastXml)\n"
-        "    $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)\n"
-        "    $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($APP_ID)\n"
-        "    $EXE_PATH = '%s'\n"
-        "    $clicked = $false\n"
-        "    $handler = [Windows.UI.Notifications.ToastActivatedEventHandler]::new({\n"
-        "        param($sender, $e)\n"
-        "        $script:clicked = $true\n"
-        "        try { Start-Process -FilePath $EXE_PATH -WindowStyle Normal } catch { }\n"
-        "    })\n"
-        "    $toast.add_Activated($handler)\n"
-        "    $dismissed = [Windows.UI.Notifications.ToastNotificationEventHandler]::new({\n"
-        "        param($sender, $e)\n"
-        "        $script:clicked = $true\n"
-        "    })\n"
-        "    $toast.add_Dismissed($dismissed)\n"
-        "    $failed = [Windows.UI.Notifications.ToastFailedEventHandler]::new({\n"
-        "        param($sender, $e)\n"
-        "        $script:clicked = $true\n"
-        "    })\n"
-        "    $toast.add_Failed($failed)\n"
-        "    $notifier.Show($toast)\n"
-        "    $timeout = [System.DateTime]::Now.AddSeconds(10)\n"
-        "    while (-not $clicked -and [System.DateTime]::Now -lt $timeout) {\n"
-        "        Start-Sleep -Milliseconds 100\n"
-        "    }\n"
-        "} catch { }\n",
-        safe_title, safe_message, ps_exe_path);
-
-    fclose(fp);
-
-    /*
-     * Execute the script via CreateProcessW.
-     * - powershell.exe (5.1): WinRT types are pre-loaded. Do NOT use pwsh.exe.
-     * - NoProfile: Skip user profile loading (fast startup).
-     * - NonInteractive: Prevent interactive prompts that could hang.
-     * - ExecutionPolicy Bypass: Allow unsigned temp scripts.
-     * - WindowStyle Hidden: No console window flash.
-     * - CREATE_NEW_CONSOLE with SW_HIDE: Required for toast delivery.
-     *   CREATE_NO_WINDOW causes silent toast failure on some systems.
-     */
-    char cmd[MAX_PATH_BUF * 2];
+    char cmd[MAX_PATH_BUF * 2 + 1600];
     snprintf(cmd, sizeof(cmd),
              "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-             "-WindowStyle Hidden -File \"%s\"",
-             ps1_path);
+             "-WindowStyle Hidden -File \"%s\" -Title \"%s\" -Message \"%s\"",
+             script_path, safe_title, safe_message);
 
     STARTUPINFOW si;
     memset(&si, 0, sizeof(si));
@@ -241,67 +218,66 @@ static void show_toast_powershell(const char *title, const char *message) {
     PROCESS_INFORMATION pi;
     memset(&pi, 0, sizeof(pi));
 
-    wchar_t wcmd[4096];
-    MultiByteToWideChar(CP_ACP, 0, cmd, -1, wcmd, (int)(sizeof(wcmd) / sizeof(wchar_t)));
+    wchar_t wcmd[8192];
+    MultiByteToWideChar(CP_ACP, 0, cmd, -1, wcmd,
+                        (int)(sizeof(wcmd) / sizeof(wchar_t)));
 
+    /*
+     * CREATE_NO_WINDOW (R158-10): the universal flag for toast delivery.
+     * R88 claimed CREATE_NO_WINDOW caused silent failure, but that was
+     * empirically falsified — the current code used CREATE_NEW_CONSOLE
+     * and toasts still failed. The real root cause was the WinRT event
+     * handlers in the script (now removed). R158-10 confirms CREATE_NO_WINDOW
+     * is used by every working example.
+     */
     BOOL created = CreateProcessW(
-        NULL,           /* Application name (NULL = use cmd line) */
-        wcmd,           /* Command line */
-        NULL,           /* Process security attributes */
-        NULL,           /* Thread security attributes */
-        FALSE,          /* Inherit handles */
-        CREATE_NEW_CONSOLE, /* Required: CREATE_NO_WINDOW causes silent toast failure */
-        NULL,           /* Use parent's environment */
-        NULL,           /* Use parent's working directory */
-        &si,            /* Startup info */
-        &pi             /* Process info (output) */
+        NULL, wcmd, NULL, NULL, FALSE,
+        CREATE_NO_WINDOW,
+        NULL, NULL, &si, &pi
     );
 
     if (created) {
-        /*
-         * Wait for the PowerShell process to finish before deleting
-         * the temp script. Without waiting, there's a race condition where
-         * the C program deletes the .ps1 file before PowerShell reads it.
-         * 15-second timeout prevents hangs if PowerShell freezes.
-         */
-        WaitForSingleObject(pi.hProcess, 15000);
+        DBG("notify: Toast process spawned (pid=%lu, script=%s)",
+            (unsigned long)pi.dwProcessId, script_path);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
+    } else {
+        DBG("notify: CreateProcessW FAILED for toast (error=%lu)", GetLastError());
     }
-
-    /*
-     * Delete the temp script AFTER the PowerShell process has finished.
-     */
-    remove(ps1_path);
 }
 
 
-int notify_init(void) {
+int notify_init(ghb_context *ctx) {
     DBG("notify: Initializing COM (STA)...");
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
         DBG("notify: COM init FAILED (hr=0x%lx)", (unsigned long)hr);
-        log_error("notify", NULL, "COM initialization failed");
+        ctx->logger->log_error(ctx, "notify", NULL, "COM initialization failed");
         return -1;
     }
     g_com_initialized = 1;
     DBG("notify: COM initialized successfully");
+
+    /* Register custom AUMID for toast notifications (R154).
+     * Without this, toasts are silently dropped by Windows. */
+    register_toast_aumid();
+
     return 0;
 }
 
 
-void toast_info(const char *title, const char *message) {
+void toast_info(ghb_context *ctx, const char *title, const char *message) {
     DBG("notify: [INFO]  '%s' - '%s'", title, message);
-    log_event(LOG_INFO, "toast", NULL, "INFO", message);
+    ctx->logger->log_event(ctx, LOG_INFO, "toast", NULL, "INFO", message);
     #ifdef _WIN32
     show_toast_powershell(title, message);
     #endif
 }
 
 
-void toast_success(const char *repo, const char *message) {
+void toast_success(ghb_context *ctx, const char *repo, const char *message) {
     DBG("notify: [OK]     '%s' - '%s'", repo, message);
-    log_event(LOG_SUCCESS, "toast", repo, "OK", message);
+    ctx->logger->log_event(ctx, LOG_SUCCESS, "toast", repo, "OK", message);
     #ifdef _WIN32
     char title[512];
     snprintf(title, sizeof(title), "Backup OK: %s", repo);
@@ -310,16 +286,17 @@ void toast_success(const char *repo, const char *message) {
 }
 
 
-void toast_error(const char *title, const char *message) {
+void toast_error(ghb_context *ctx, const char *title, const char *message) {
     DBG("notify: [ERROR] '%s' - '%s'", title, message);
-    log_event(LOG_ERROR, "toast", NULL, "FAILED", message);
+    ctx->logger->log_event(ctx, LOG_ERROR, "toast", NULL, "FAILED", message);
     #ifdef _WIN32
     show_toast_powershell(title, message);
     #endif
 }
 
 
-void notify_cleanup(void) {
+void notify_cleanup(ghb_context *ctx) {
+    (void)ctx;  /* Cleanup uses only the global COM state flag */
     if (g_com_initialized) {
         DBG("notify: Cleanup - CoUninitialize");
         CoUninitialize();
@@ -333,28 +310,28 @@ void notify_cleanup(void) {
 
 /* ─── Non-Windows stubs (for compilation testing on Linux) ──── */
 
-int notify_init(void) {
-    log_event(LOG_INFO, "notify", NULL, "INFO",
+int notify_init(ghb_context *ctx) {
+    ctx->logger->log_event(ctx, LOG_INFO, "notify", NULL, "INFO",
               "Toast notifications disabled (non-Windows platform)");
     return 0;
 }
 
-void toast_info(const char *title, const char *message) {
+void toast_info(ghb_context *ctx, const char *title, const char *message) {
     (void)title;
-    log_event(LOG_INFO, "toast", NULL, "INFO", message);
+    ctx->logger->log_event(ctx, LOG_INFO, "toast", NULL, "INFO", message);
 }
 
-void toast_success(const char *repo, const char *message) {
-    log_event(LOG_SUCCESS, "toast", repo, "OK", message);
+void toast_success(ghb_context *ctx, const char *repo, const char *message) {
+    ctx->logger->log_event(ctx, LOG_SUCCESS, "toast", repo, "OK", message);
 }
 
-void toast_error(const char *title, const char *message) {
+void toast_error(ghb_context *ctx, const char *title, const char *message) {
     (void)title;
-    log_event(LOG_ERROR, "toast", NULL, "FAILED", message);
+    ctx->logger->log_event(ctx, LOG_ERROR, "toast", NULL, "FAILED", message);
 }
 
-void notify_cleanup(void) {
-    /* No-op on non-Windows */
+void notify_cleanup(ghb_context *ctx) {
+    (void)ctx;  /* No-op on non-Windows */
 }
 
 #endif

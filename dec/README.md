@@ -21,3 +21,4 @@ NNN.md
 | `005.md` | Using temp-file-then-rename pattern for backup file integrity |
 | `006.md` | Single-instance, log viewer, shutdown, ANSI console, background mode |
 | `007.md` | Two-process architecture (daemon + viewer) |
+| `008.md` | Immediate shutdown on 'q' key — spec override (abort download, don't finish it) |

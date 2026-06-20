@@ -432,6 +432,9 @@
 /** Default polling interval (ms) for checking shutdown event during sleep. */
 #define DEFAULT_SHUTDOWN_CHECK_INTERVAL_MS  1000
 
+/** Default backup directory when not set in .env. Spec Section 1. */
+#define DEFAULT_BACKUP_DIR "D:\\BACKUP\\"
+
 /** Maximum length of a formatted console log line. */
 #define MAX_CONSOLE_LINE_LEN        1024
 

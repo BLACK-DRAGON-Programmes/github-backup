@@ -14,9 +14,10 @@
 
 #include "backup.h"
 #include "config.h"
-#include "network.h"
-#include "logger.h"
-#include "notify.h"
+#include "context.h"
+#include "logger_iface.h"
+#include "notify_iface.h"
+#include "network_iface.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -36,6 +37,88 @@ static int tests_failed = 0;
 
 /** Temporary test directory for file operation tests. */
 #define TEST_DIR "/tmp/ghb_test_"
+
+
+/* ─── Fake Implementations for Dependency Injection ─────────── */
+
+/* Fake logger ops — all no-ops */
+static void fake_log_event(ghb_context *ctx, log_level level,
+                           const char *action, const char *repo,
+                           const char *status, const char *detail) {
+    (void)ctx; (void)level; (void)action; (void)repo; (void)status; (void)detail;
+}
+static void fake_log_error(ghb_context *ctx, const char *action,
+                           const char *repo, const char *detail) {
+    (void)ctx; (void)action; (void)repo; (void)detail;
+}
+static int  fake_log_init(ghb_context *ctx, const char *log_path) {
+    (void)ctx; (void)log_path; return 0;
+}
+static void fake_log_close(ghb_context *ctx) { (void)ctx; }
+static void fake_rotate_log(ghb_context *ctx, long max_size_bytes) {
+    (void)ctx; (void)max_size_bytes;
+}
+static const logger_ops fake_logger = {
+    .log_event            = fake_log_event,
+    .log_error            = fake_log_error,
+    .log_init             = fake_log_init,
+    .log_close            = fake_log_close,
+    .rotate_log           = fake_rotate_log,
+};
+
+/* Fake notify ops — all no-ops */
+static void fake_toast_info(ghb_context *ctx, const char *title,
+                            const char *message) {
+    (void)ctx; (void)title; (void)message;
+}
+static void fake_toast_success(ghb_context *ctx, const char *repo,
+                               const char *message) {
+    (void)ctx; (void)repo; (void)message;
+}
+static void fake_toast_error(ghb_context *ctx, const char *title,
+                             const char *message) {
+    (void)ctx; (void)title; (void)message;
+}
+static int  fake_notify_init(ghb_context *ctx) { (void)ctx; return 0; }
+static void fake_notify_cleanup(ghb_context *ctx) { (void)ctx; }
+
+static const notify_ops fake_notify = {
+    .toast_info     = fake_toast_info,
+    .toast_success  = fake_toast_success,
+    .toast_error    = fake_toast_error,
+    .notify_init    = fake_notify_init,
+    .notify_cleanup = fake_notify_cleanup,
+};
+
+/* Fake network ops — all no-ops */
+static int fake_get_branch(ghb_context *ctx, const char *owner, const char *repo, const char *token, char *out, int len, int timeout) { (void)ctx; (void)owner; (void)repo; (void)token; (void)len; (void)timeout; snprintf(out, len, "main"); return 0; }
+static int fake_download_zip(ghb_context *ctx, const char *owner, const char *repo, const char *branch, const char *token, const char *path, int timeout) { (void)ctx; (void)owner; (void)repo; (void)branch; (void)token; (void)path; (void)timeout; return 0; }
+static int fake_check_connectivity(ghb_context *ctx, int timeout) { (void)ctx; (void)timeout; return 1; }
+static int fake_network_init(ghb_context *ctx) { (void)ctx; return 0; }
+static void fake_network_cleanup(ghb_context *ctx) { (void)ctx; }
+
+static const network_ops fake_network = {
+    .get_default_branch = fake_get_branch,
+    .download_repo_zip  = fake_download_zip,
+    .check_connectivity = fake_check_connectivity,
+    .network_init       = fake_network_init,
+    .network_cleanup    = fake_network_cleanup,
+};
+
+
+/**
+ * Create a test context with all fake (no-op) implementations.
+ * Used by every test function so DI-dependent code can call
+ * through ctx without hitting real I/O.
+ */
+static ghb_context create_test_context(void) {
+    ghb_context ctx;
+    ctx.logger  = &fake_logger;
+    ctx.notify  = &fake_notify;
+    ctx.network = &fake_network;
+    ctx.should_stop = NULL;
+    return ctx;
+}
 
 
 #define TEST(name) printf("  TEST: %s... ", name)
@@ -134,7 +217,8 @@ static void test_cleanup_existing_file(void) {
     if (check == NULL) { FAIL("file not created"); return; }
     fclose(check);
 
-    cleanup_temp_file(path);
+    ghb_context ctx = create_test_context();
+    cleanup_temp_file(&ctx, path);
 
     /* Verify it's gone */
     check = fopen(path, "rb");
@@ -148,8 +232,10 @@ static void test_cleanup_existing_file(void) {
 static void test_cleanup_nonexistent_file(void) {
     TEST("cleanup_temp_file — nonexistent file (no crash)");
 
+    ghb_context ctx = create_test_context();
+
     /* Should not crash — just log a warning */
-    cleanup_temp_file("/tmp/nonexistent_ghb_cleanup_test.tmp");
+    cleanup_temp_file(&ctx, "/tmp/nonexistent_ghb_cleanup_test.tmp");
     PASS();
 }
 
@@ -166,7 +252,9 @@ static void test_atomic_write_no_existing(void) {
     /* Ensure no existing final file */
     remove(final);
 
-    int result = atomic_write(temp, final);
+    ghb_context ctx = create_test_context();
+
+    int result = atomic_write(&ctx, temp, final);
     if (result != 0) { FAIL("atomic_write failed"); return; }
 
     /* Verify temp is gone and final exists */
@@ -197,7 +285,9 @@ static void test_atomic_write_replace_existing(void) {
     /* Create new temp file */
     create_test_file(TEST_DIR "5/", "repo.zip.tmp", "new_backup_data", temp);
 
-    int result = atomic_write(temp, final);
+    ghb_context ctx = create_test_context();
+
+    int result = atomic_write(&ctx, temp, final);
     if (result != 0) { FAIL("atomic_write failed"); return; }
 
     /* Verify temp is gone */
@@ -226,8 +316,10 @@ static void test_atomic_write_replace_existing(void) {
 static void test_atomic_write_null_paths(void) {
     TEST("atomic_write — NULL paths return error");
 
-    int r1 = atomic_write(NULL, "/tmp/test.txt");
-    int r2 = atomic_write("/tmp/test.txt", NULL);
+    ghb_context ctx = create_test_context();
+
+    int r1 = atomic_write(&ctx, NULL, "/tmp/test.txt");
+    int r2 = atomic_write(&ctx, "/tmp/test.txt", NULL);
 
     if (r1 == 0 || r2 == 0) { FAIL("should return error for NULL"); return; }
     PASS();
@@ -250,11 +342,61 @@ static void test_backup_result_values(void) {
 }
 
 
+static void test_backup_result_all_distinct(void) {
+    TEST("backup_result enum — all values are distinct");
+
+    backup_result values[] = {
+        BACKUP_OK, BACKUP_NOT_FOUND, BACKUP_AUTH_ERROR,
+        BACKUP_NETWORK_ERROR, BACKUP_VERIFY_FAILED,
+        BACKUP_DISK_FULL, BACKUP_RATE_LIMITED, BACKUP_UNKNOWN_ERROR
+    };
+    int n = (int)(sizeof(values) / sizeof(values[0]));
+
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (values[i] == values[j]) {
+                FAIL("duplicate enum values found");
+                return;
+            }
+        }
+    }
+    PASS();
+}
+
+
+static void test_backup_rate_limited_exists(void) {
+    TEST("backup_result — BACKUP_RATE_LIMITED is distinct from BACKUP_NETWORK_ERROR");
+
+    if (BACKUP_RATE_LIMITED == BACKUP_NETWORK_ERROR) {
+        FAIL("RATE_LIMITED should differ from NETWORK_ERROR");
+        return;
+    }
+    PASS();
+}
+
+
+static void test_verify_downloaded_file_with_content(void) {
+    TEST("verify_downloaded_file — file with actual zip-like content");
+
+    char path[MAX_URL_LEN];
+    /* Write a realistic PK header + some data */
+    const char *zip_content = "PK\x03\x04\x14\x00\x08\x00\x08\x00";
+    if (create_test_file(TEST_DIR "6/", "real.zip", zip_content, path) != 0) {
+        FAIL("could not create test file"); return;
+    }
+
+    int result = verify_downloaded_file(path);
+    if (result != 0) { FAIL("should pass for non-empty file with content"); remove(path); return; }
+
+    remove(path);
+    PASS();
+}
+
+
 /* ─── Main ─────────────────────────────────────────────────── */
 
 int main(void) {
-    log_init("/tmp/test_backup.log");
-    notify_init();
+    /* No real subsystem init needed — each test creates its own fake context */
 
     /* Create test directories */
     mkdir(TEST_DIR "1/", 0755);
@@ -262,6 +404,7 @@ int main(void) {
     mkdir(TEST_DIR "3/", 0755);
     mkdir(TEST_DIR "4/", 0755);
     mkdir(TEST_DIR "5/", 0755);
+    mkdir(TEST_DIR "6/", 0755);
 
     printf("=== Backup Module Tests ===\n\n");
 
@@ -287,6 +430,12 @@ int main(void) {
     /* Result codes */
     printf("\n-- Result code tests --\n");
     test_backup_result_values();
+    test_backup_result_all_distinct();
+    test_backup_rate_limited_exists();
+
+    /* Content verification */
+    printf("\n-- Content verification tests --\n");
+    test_verify_downloaded_file_with_content();
 
     printf("\n=== Results: %d passed, %d failed ===\n",
            tests_passed, tests_failed);
@@ -297,9 +446,9 @@ int main(void) {
     rmdir(TEST_DIR "3/");
     rmdir(TEST_DIR "4/");
     rmdir(TEST_DIR "5/");
+    rmdir(TEST_DIR "6/");
 
-    log_close();
-    notify_cleanup();
+    /* No real logger/notify to close — fake ops are no-ops */
 
     return tests_failed > 0 ? 1 : 0;
 }

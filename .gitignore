@@ -19,3 +19,5 @@
 # === OS files ===
 Thumbs.db
 Desktop.ini
+ghb/test_*
+*.exe

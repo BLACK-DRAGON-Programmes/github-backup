@@ -13,7 +13,7 @@
  */
 
 #include "console.h"
-#include "logger.h"
+#include "logger_iface.h"
 #include "constants.h"
 
 #include <stdio.h>
@@ -168,11 +168,9 @@ void console_log_viewer(const char *log_path) {
     fprintf(stdout, "%s%s=============================%s\n",
             ANSI_CYAN, ANSI_DIM, ANSI_RESET);
     fprintf(stdout, "\n");
-    fprintf(stdout, "%s  Press 'q' to shut down the backup daemon.%s\n",
+    fprintf(stdout, "%s  Press 'q' to shutdown the backup daemon.%s\n",
             ANSI_YELLOW, ANSI_RESET);
-    fprintf(stdout, "%s  Press Ctrl+C or close this window to disconnect.%s\n",
-            ANSI_DIM, ANSI_RESET);
-    fprintf(stdout, "%s  (The daemon keeps running when you close this window.)%s\n",
+    fprintf(stdout, "%s  Close this window to disconnect (daemon keeps running).%s\n",
             ANSI_DIM, ANSI_RESET);
     fprintf(stdout, "\n");
     fflush(stdout);

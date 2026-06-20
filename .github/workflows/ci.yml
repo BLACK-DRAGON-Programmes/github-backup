@@ -1,0 +1,81 @@
+# GitHub Backup - Continuous Integration
+# Runs all unit test suites on every push and pull request.
+# The project uses a custom test framework (no external dependencies).
+# Tests compile on Linux using POSIX stubs for Windows-only APIs.
+
+name: CI - Build & Test
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'ghb/src/**'
+      - 'ghb/tests/**'
+      - 'ghb/.github/workflows/**'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'ghb/src/**'
+      - 'ghb/tests/**'
+      - 'ghb/.github/workflows/**'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install GCC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc
+
+      - name: Compile test_config
+        run: |
+          cd ghb
+          gcc -o test_config tests/test_config.c src/config.c src/logger.c src/notify.c src/network.c src/backup.c src/console.c -I src/ -Wall -Wextra
+
+      - name: Compile test_network
+        run: |
+          cd ghb
+          gcc -o test_network tests/test_network.c src/network.c src/logger.c src/notify.c src/config.c src/backup.c src/console.c -I src/ -Wall -Wextra
+
+      - name: Compile test_backup
+        run: |
+          cd ghb
+          gcc -o test_backup tests/test_backup.c src/backup.c src/config.c src/network.c src/logger.c src/notify.c src/console.c -I src/ -Wall -Wextra
+
+      - name: Compile test_logger
+        run: |
+          cd ghb
+          gcc -o test_logger tests/test_logger.c src/logger.c src/notify.c src/console.c -I src/ -Wall -Wextra
+
+      - name: Compile test_notify
+        run: |
+          cd ghb
+          gcc -o test_notify tests/test_notify.c src/notify.c src/logger.c src/console.c -I src/ -Wall -Wextra
+
+      - name: Run test_config
+        run: cd ghb && ./test_config
+
+      - name: Run test_network
+        run: cd ghb && ./test_network
+
+      - name: Run test_backup
+        run: cd ghb && ./test_backup
+
+      - name: Run test_logger
+        run: cd ghb && ./test_logger
+
+      - name: Run test_notify
+        run: cd ghb && ./test_notify
+
+      - name: Test summary
+        run: |
+          echo "=== All test suites completed ==="
+          cd ghb
+          for test in test_config test_network test_backup test_logger test_notify; do
+            ./$test 2>&1 | tail -1
+          done

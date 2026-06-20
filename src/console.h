@@ -19,7 +19,7 @@
 #ifndef CONSOLE_H
 #define CONSOLE_H
 
-#include "logger.h"
+#include "logger_iface.h"
 
 /**
  * Initialize the console for ANSI output.

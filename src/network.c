@@ -19,8 +19,8 @@
  */
 
 #include "network.h"
-#include "logger.h"
-#include "notify.h"
+#include "context.h"
+#include "logger.h"  /* DBG macro — compile-time debug toggle, not a DI call */
 
 #include <stdio.h>
 #include <string.h>
@@ -51,10 +51,17 @@ static HINTERNET g_hSession = NULL;
 static const wchar_t *GITHUB_API_HOST = L"api.github.com";
 
 /**
- * Host name for the connectivity check. The pre-cycle internet
- * probe connects to github.com to verify network availability.
+ * Host name for the connectivity check. Derived from CONNECTIVITY_CHECK_URL.
+ * The full URL constant exists for documentation, but WinHttpConnect
+ * needs just the host component.
  */
-static const wchar_t *CONNECTIVITY_HOST = L"github.com";
+static const wchar_t CONNECTIVITY_HOST[] = L"github.com";
+
+/**
+ * Wide-string version of HTTP_USER_AGENT for WinHttpOpen.
+ * Converted once at init time from the ASCII constant.
+ */
+static wchar_t w_user_agent[128];
 
 /**
  * Resolve timeout value in milliseconds for WinHTTP. Converts a
@@ -127,22 +134,281 @@ static void parse_rate_limit_headers(HINTERNET h_request,
 
     if (read_header_value(h_request, RATELIMIT_REMAINING_HEADER,
                           header_value, sizeof(header_value)) == 0) {
-        rate_info->remaining = atoi(header_value);
+        {
+            char *end_ptr = NULL;
+            long val = strtol(header_value, &end_ptr, 10);
+            rate_info->remaining = (end_ptr != header_value && *end_ptr == '\0')
+                                   ? (int)val : 0;
+        }
         rate_info->headers_parsed = 1;
     }
 
     if (read_header_value(h_request, RATELIMIT_RESET_HEADER,
                           header_value, sizeof(header_value)) == 0) {
-        rate_info->reset_time = atol(header_value);
+        {
+            char *end_ptr = NULL;
+            long val = strtol(header_value, &end_ptr, 10);
+            rate_info->reset_time = (end_ptr != header_value && *end_ptr == '\0')
+                                    ? val : 0;
+        }
         /* headers_parsed already set by the first header check above,
            or remains 1 if only remaining was found */
     }
 }
 
 
+/* ─── Shared HTTP Helpers (Windows) ───────────────────────── */
+
+/**
+ * Extract the path component from a full URL.
+ * URL format: https://api.github.com/repos/owner/repo
+ * Path:       /repos/owner/repo
+ * Finds the third slash and returns everything from it onward.
+ *
+ * @param url            Full URL
+ * @param path_out       Output: malloc'd wide-string path (caller must free)
+ * @param path_len_out  Output: length of the extracted path (or NULL)
+ * @return 0 on success, -1 if URL format is invalid
+ */
+static int extract_url_path(const char *url, wchar_t **path_out, int *path_len_out) {
+    const char *path_start = NULL;
+    int slash_count = 0;
+    for (const char *p = url; *p != '\0'; p++) {
+        if (*p == '/') {
+            slash_count++;
+            if (slash_count == 3) {
+                path_start = p;
+                break;
+            }
+        }
+    }
+    if (path_start == NULL) {
+        return -1;
+    }
+
+    int path_len = (int)strlen(path_start);
+    wchar_t *wide_path = (wchar_t *)malloc(
+        ((size_t)path_len + 1) * sizeof(wchar_t));
+    if (wide_path == NULL) {
+        return -1;
+    }
+    MultiByteToWideChar(CP_ACP, 0, path_start, -1,
+                        wide_path, path_len + 1);
+    *path_out = wide_path;
+    if (path_len_out != NULL) {
+        *path_len_out = path_len;
+    }
+    return 0;
+}
+
+/**
+ * Build the Authorization header from a token.
+ * Uses AUTH_HEADER_PREFIX constant from constants.h.
+ *
+ * @param token          Bearer token string
+ * @param auth_header_out Output: malloc'd wide-string header (caller must free)
+ * @return 0 on success, -1 if token is empty
+ */
+static int build_auth_header(const char *token,
+                              wchar_t **auth_header_out) {
+    if (token == NULL || token[0] == '\0') {
+        *auth_header_out = NULL;
+        return 0;
+    }
+
+    char auth_ascii[MAX_URL_LEN];
+    snprintf(auth_ascii, sizeof(auth_ascii),
+             "Authorization: %s%s\r\n", AUTH_HEADER_PREFIX, token);
+
+    wchar_t *w_header = (wchar_t *)malloc(
+        MAX_URL_LEN * sizeof(wchar_t));
+    if (w_header == NULL) {
+        return -1;
+    }
+    MultiByteToWideChar(CP_ACP, 0, auth_ascii, -1,
+                        w_header, MAX_URL_LEN);
+    *auth_header_out = w_header;
+    return 0;
+}
+
+/**
+ * Holds all WinHTTP handles needed for an HTTP request.
+ * Allows a shared setup function to prepare the request for any caller.
+ */
+typedef struct {
+    HINTERNET h_connect;
+    HINTERNET h_request;
+    wchar_t *wide_path;     /* Malloc'd — caller must free */
+    wchar_t *auth_header;   /* Malloc'd — caller must free, or NULL */
+} http_request_handles;
+
+/* Forward declaration — defined after close_http_request */
+static void set_request_timeouts(HINTERNET h_request, int timeout_ms);
+
+/**
+ * Prepare an HTTP GET request to api.github.com.
+ * Opens connection, extracts URL path, sets timeouts, builds auth header,
+ * opens request handle. Caller must close handles and free wide_path/auth_header.
+ *
+ * @param timeout_ms   HTTP timeout
+ * @param token        Bearer token (or NULL for unauthenticated)
+ * @param url           Full URL with path
+ * @param repo          Repository name (for error logging)
+ * @param req_out       Output: populated request handles
+ * @return 0 on success, -1 on any failure (handles are cleaned up)
+ */
+static int prepare_http_request(ghb_context *ctx, int timeout_ms, const char *token,
+                                const char *url, const char *repo,
+                                http_request_handles *req_out) {
+    memset(req_out, 0, sizeof(*req_out));
+
+    req_out->h_connect = WinHttpConnect(
+        g_hSession, GITHUB_API_HOST,
+        INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (req_out->h_connect == NULL) {
+        DBG("prepare_http_request: WinHttpConnect FAILED (error %lu) for %s", GetLastError(), repo);
+        ctx->logger->log_error(ctx, "network", repo,
+                  "WinHttpConnect failed");
+        return -1;
+    }
+
+    if (extract_url_path(url, &req_out->wide_path, NULL) != 0) {
+        ctx->logger->log_error(ctx, "network", repo, "Cannot parse path from URL");
+        WinHttpCloseHandle(req_out->h_connect);
+        return -1;
+    }
+
+    req_out->h_request = WinHttpOpenRequest(
+        req_out->h_connect, L"GET", req_out->wide_path,
+        NULL, WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+
+    if (req_out->h_request == NULL) {
+        DBG("prepare_http_request: WinHttpOpenRequest FAILED (error %lu) for %s", GetLastError(), repo);
+        ctx->logger->log_error(ctx, "network", repo, "WinHttpOpenRequest failed");
+        free(req_out->wide_path);
+        WinHttpCloseHandle(req_out->h_connect);
+        return -1;
+    }
+
+    /* Set timeouts */
+    set_request_timeouts(req_out->h_request, timeout_ms);
+
+    /* Build auth header */
+    if (build_auth_header(token, &req_out->auth_header) != 0) {
+        ctx->logger->log_error(ctx, "network", repo, "Failed to build auth header");
+        free(req_out->wide_path);
+        WinHttpCloseHandle(req_out->h_request);
+        WinHttpCloseHandle(req_out->h_connect);
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * Close handles and free memory in an http_request_handles struct.
+ */
+static void close_http_request(ghb_context *ctx, http_request_handles *req) {
+    (void)ctx;  /* Reserved for future debug logging — cleanup is silent */
+    if (req->h_request) WinHttpCloseHandle(req->h_request);
+    if (req->h_connect) WinHttpCloseHandle(req->h_connect);
+    if (req->wide_path) free(req->wide_path);
+    if (req->auth_header) free(req->auth_header);
+    memset(req, 0, sizeof(*req));
+}
+
+/**
+ * Apply RESOLVE/CONNECT/RECEIVE timeouts to a WinHTTP request handle.
+ * Consolidates the 3x WinHttpSetOption pattern used by prepare_http_request()
+ * and check_connectivity(). If timeout is zero or negative, no timeouts
+ * are set (WinHTTP uses system defaults).
+ *
+ * @param h_request   WinHTTP request handle
+ * @param timeout_ms  Timeout in milliseconds from config
+ */
+static void set_request_timeouts(HINTERNET h_request, int timeout_ms) {
+    DWORD timeout = to_winhttp_timeout(timeout_ms);
+    if (timeout > 0) {
+        WinHttpSetOption(h_request, WINHTTP_OPTION_RESOLVE_TIMEOUT,
+                         &timeout, sizeof(timeout));
+        WinHttpSetOption(h_request, WINHTTP_OPTION_CONNECT_TIMEOUT,
+                         &timeout, sizeof(timeout));
+        WinHttpSetOption(h_request, WINHTTP_OPTION_RECEIVE_TIMEOUT,
+                         &timeout, sizeof(timeout));
+    }
+}
+
+/**
+ * Sleep until the GitHub API rate limit reset window, checking for
+ * shutdown events in 1-second intervals. Consolidates the duplicated
+ * sleep-until-reset logic in get_default_branch() and download_repo_zip().
+ *
+ * Spec Section 7: "If rate-limited, log, fire a toast, sleep until
+ * the reset window and retry." Maximum wait is 1 hour (3600 seconds).
+ *
+ * @param ctx           Context for logging and notifications
+ * @param rate          Parsed rate limit info with reset_time
+ * @param repo          Repository name for log/toast messages
+ * @param operation     Description of the rate-limited operation (e.g., "metadata", "zip download")
+ * @return 0 if sleep completed, -1 if conditions not met (no sleep performed)
+ */
+static int rate_limit_sleep(ghb_context *ctx, const rate_limit_info *rate,
+                            const char *repo, const char *operation) {
+    if (!rate->headers_parsed || rate->reset_time <= 0) {
+        return -1;  /* No valid rate limit info - caller should handle */
+    }
+
+    time_t now = time(NULL);
+    long wait_seconds = (long)(rate->reset_time - (long)now);
+    if (wait_seconds <= 0 || wait_seconds >= 3600) {
+        return -1;  /* Wait time invalid or too long - caller should handle */
+    }
+
+    char detail[256];
+    snprintf(detail, sizeof(detail),
+             "Rate limited on %s - sleeping %ld seconds until reset window",
+             operation, wait_seconds);
+    ctx->logger->log_event(ctx, LOG_WARNING, "network", repo, "RATE_LIMITED", detail);
+
+    /* Toast with reset time so the operator knows when to expect recovery */
+    char rl_toast[256];
+    time_t reset_local = (time_t)rate->reset_time;
+    char time_str[32];
+    strftime(time_str, sizeof(time_str), "%H:%M:%S",
+             localtime(&reset_local));
+    snprintf(rl_toast, sizeof(rl_toast),
+             "GitHub API rate limit - retrying at %s UTC", time_str);
+    ctx->notify->toast_error(ctx, "Rate Limited", rl_toast);
+
+    DBG("rate_limit_sleep: Sleeping %lds for %s (repo=%s)", wait_seconds, operation, repo);
+
+    /* Sleep in 1-second intervals so we can be interrupted by shutdown */
+#ifdef _WIN32
+    for (long s = 0; s < wait_seconds; s++) {
+        HANDLE h_evt = OpenEventA(SYNCHRONIZE, FALSE,
+                                      BACKUP_SHUTDOWN_EVENT_NAME);
+        if (h_evt != NULL) {
+            DWORD wait_result = WaitForSingleObject(h_evt, 1000);
+            CloseHandle(h_evt);
+            if (wait_result == WAIT_OBJECT_0) {
+                DBG("rate_limit_sleep: Shutdown requested during sleep");
+                break;
+            }
+        }
+        Sleep(1000);
+    }
+#else
+    sleep((unsigned int)wait_seconds);
+#endif
+
+    return 0;
+}
+
+
 /* ─── Public Functions (Windows) ──────────────────────────── */
 
-int network_init(void) {
+int network_init(ghb_context *ctx) {
     /*
      * WINHTTP_ACCESS_TYPE_NO_PROXY bypasses WPAD (Web Proxy Auto-Discovery).
      * WINHTTP_ACCESS_TYPE_DEFAULT_PROXY can block for 60+ seconds on
@@ -154,8 +420,10 @@ int network_init(void) {
 
     DBG("network_init: Calling WinHttpOpen (NO_PROXY)...");
 
+    MultiByteToWideChar(CP_ACP, 0, HTTP_USER_AGENT, -1, w_user_agent, 128);
+
     g_hSession = WinHttpOpen(
-        L"GitHubBackup/1.0",                 /* User agent */
+        w_user_agent,                          /* User agent */
         WINHTTP_ACCESS_TYPE_NO_PROXY,          /* Direct connection - no WPAD */
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
@@ -163,20 +431,20 @@ int network_init(void) {
     );
 
     if (g_hSession == NULL) {
-        log_error("network", NULL,
+        ctx->logger->log_error(ctx, "network", NULL,
                   "WinHttpOpen failed - cannot initialize HTTP session");
         return -1;
     }
 
-    log_event(LOG_INFO, "network", NULL, "OK",
+    ctx->logger->log_event(ctx, LOG_INFO, "network", NULL, "OK",
               "WinHTTP session initialized");
     return 0;
 }
 
 
-int check_connectivity(int timeout_ms) {
+int check_connectivity(ghb_context *ctx, int timeout_ms) {
     if (g_hSession == NULL) {
-        log_error("network", NULL,
+        ctx->logger->log_error(ctx, "network", NULL,
                   "Cannot check connectivity - session not initialized");
         return 0;
     }
@@ -204,7 +472,7 @@ int check_connectivity(int timeout_ms) {
         DWORD err = GetLastError();
         DBG("check_connectivity: WinHttpConnect FAILED (error %lu)", err);
         (void)err;
-        log_event(LOG_WARNING, "network", NULL, "FAILED",
+        ctx->logger->log_event(ctx, LOG_WARNING, "network", NULL, "FAILED",
                   "Connectivity check failed - cannot reach github.com");
         return 0;
     }
@@ -227,16 +495,8 @@ int check_connectivity(int timeout_ms) {
         return 0;
     }
 
-    /* Apply timeout to all phases (resolve, connect, send, receive) */
-    DWORD timeout = to_winhttp_timeout(timeout_ms);
-    if (timeout > 0) {
-        WinHttpSetOption(h_request, WINHTTP_OPTION_RESOLVE_TIMEOUT,
-                         &timeout, sizeof(timeout));
-        WinHttpSetOption(h_request, WINHTTP_OPTION_CONNECT_TIMEOUT,
-                         &timeout, sizeof(timeout));
-        WinHttpSetOption(h_request, WINHTTP_OPTION_RECEIVE_TIMEOUT,
-                         &timeout, sizeof(timeout));
-    }
+    /* Apply timeout to all phases (resolve, connect, receive) */
+    set_request_timeouts(h_request, timeout_ms);
 
     /* Send the request - this is where the timeout applies */
     BOOL send_result = WinHttpSendRequest(
@@ -252,7 +512,7 @@ int check_connectivity(int timeout_ms) {
         DBG("check_connectivity: Timed out after %dms - no internet", timeout_ms);
         WinHttpCloseHandle(h_request);
         WinHttpCloseHandle(h_connect);
-        log_event(LOG_WARNING, "network", NULL, "FAILED",
+        ctx->logger->log_event(ctx, LOG_WARNING, "network", NULL, "FAILED",
                   "Connectivity check failed - cannot reach github.com");
         return 0;
     }
@@ -263,162 +523,34 @@ int check_connectivity(int timeout_ms) {
     WinHttpCloseHandle(h_connect);
 
     DBG("check_connectivity: Connected to %S successfully", CONNECTIVITY_HOST);
-    log_event(LOG_INFO, "network", NULL, "OK",
+    ctx->logger->log_event(ctx, LOG_INFO, "network", NULL, "OK",
               "Internet connectivity confirmed");
     return 1;
 }
 
 
-int http_get(const char *url, const char *token,
+int http_get(ghb_context *ctx, const char *url, const char *token,
              char *response_body, int body_size,
              int *response_code, rate_limit_info *rate_info,
              int timeout_ms) {
 
     if (g_hSession == NULL) {
-        log_error("network", NULL,
+        ctx->logger->log_error(ctx, "network", NULL,
                   "Cannot send HTTP request - session not initialized");
         return -1;
     }
 
-
-    /*
-     * Determine which host to connect to based on the URL.
-     * All API requests go to api.github.com.
-     * The connectivity check uses github.com, but it does not
-     * call http_get() - it uses check_connectivity() directly.
-     */
-    HINTERNET h_connect = WinHttpConnect(
-        g_hSession,
-        GITHUB_API_HOST,
-        INTERNET_DEFAULT_HTTPS_PORT,
-        0
-    );
-
-    DBG("http_get: Connecting to %S...", GITHUB_API_HOST);
-
-    if (h_connect == NULL) {
-        DWORD err = GetLastError();
-        DBG("http_get: WinHttpConnect FAILED (error %lu)", err);
-        (void)err;
-        log_error("network", NULL,
-                  "WinHttpConnect to api.github.com failed");
+    http_request_handles req;
+    if (prepare_http_request(ctx, timeout_ms, token, url, "metadata", &req) != 0) {
         return -1;
     }
 
-    DBG("http_get: Connected, opening request...");
-
-    /*
-     * Extract the path component from the full URL.
-     * URL format: https://api.github.com/repos/owner/repo
-     * Path:       /repos/owner/repo
-     *
-     * Find the third slash (after "https://") to get the path.
-     */
-    const char *path_start = NULL;
-    int slash_count = 0;
-    for (const char *p = url; *p != '\0'; p++) {
-        if (*p == '/') {
-            slash_count++;
-            if (slash_count == 3) {
-                path_start = p;
-                break;
-            }
-        }
-    }
-
-    if (path_start == NULL) {
-        log_error("network", NULL, "Cannot parse path from URL");
-        WinHttpCloseHandle(h_connect);
-        return -1;
-    }
-
-    /* Convert path to wide string for WinHTTP */
-    int path_len = (int)strlen(path_start);
-    wchar_t *wide_path = (wchar_t *)malloc(
-        ((size_t)path_len + 1) * sizeof(wchar_t));
-    if (wide_path == NULL) {
-        log_error("network", NULL,
-                  "Memory allocation failed for URL path");
-        WinHttpCloseHandle(h_connect);
-        return -1;
-    }
-    MultiByteToWideChar(CP_ACP, 0, path_start, -1,
-                        wide_path, path_len + 1);
-
-
-    DBG("http_get: Opening request for path %s...", path_start);
-
-    /* Open the request handle */
-    HINTERNET h_request = WinHttpOpenRequest(
-        h_connect,
-        L"GET",                      /* HTTP method */
-        wide_path,                   /* Request path */
-        NULL,                        /* HTTP version (NULL = HTTP/1.1) */
-        WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES, /* Accept headers */
-        WINHTTP_FLAG_SECURE          /* HTTPS required for api.github.com */
-    );
-
-    free(wide_path);
-
-    if (h_request == NULL) {
-        DWORD err = GetLastError();
-        DBG("http_get: WinHttpOpenRequest FAILED (error %lu)", err);
-        (void)err;
-        log_error("network", NULL,
-                  "WinHttpOpenRequest failed");
-        WinHttpCloseHandle(h_connect);
-        return -1;
-    }
-
-
-    /*
-     * Set timeouts for this request. WinHTTP supports separate
-     * resolve, connect, and send timeouts. We apply the same
-     * timeout value to all three phases for simplicity.
-     */
-    DWORD timeout = to_winhttp_timeout(timeout_ms);
-    if (timeout > 0) {
-        WinHttpSetOption(h_request, WINHTTP_OPTION_RESOLVE_TIMEOUT,
-                         &timeout, sizeof(timeout));
-        WinHttpSetOption(h_request, WINHTTP_OPTION_CONNECT_TIMEOUT,
-                         &timeout, sizeof(timeout));
-        WinHttpSetOption(h_request, WINHTTP_OPTION_RECEIVE_TIMEOUT,
-                         &timeout, sizeof(timeout));
-    }
-
-    /*
-     * Build the Authorization header if a token is provided.
-     * Format: "Authorization: Bearer <token>"
-     *
-     * IMPORTANT: The header must be built as a char string FIRST,
-     * then converted to wchar_t. Writing ASCII bytes into a wchar_t
-     * buffer via snprintf corrupts the data because wchar_t is 2 bytes
-     * - writing one char per byte misaligns the wchar_t boundaries.
-     * Using separate char and wchar_t buffers avoids this aliasing bug.
-     */
-    LPCWSTR additional_headers = NULL;
-    char auth_ascii[MAX_URL_LEN];
-    wchar_t auth_header[MAX_URL_LEN];
-
-    if (token != NULL && token[0] != '\0') {
-        snprintf(auth_ascii, sizeof(auth_ascii),
-                 "Authorization: Bearer %s\r\n", token);
-        /*
-         * Convert the ASCII header string to wide string.
-         * The header string is ASCII-compatible, so MultiByteToWideChar
-         * with CP_ACP is safe. Separate source and destination buffers
-         * prevent the overlapping-buffer aliasing bug.
-         */
-        MultiByteToWideChar(CP_ACP, 0, auth_ascii, -1,
-                            auth_header, MAX_URL_LEN);
-        additional_headers = auth_header;
-    }
+    LPCWSTR additional_headers = req.auth_header;
 
     /* Send the request */
     DBG("http_get: Sending request...");
     BOOL send_result = WinHttpSendRequest(
-        h_request,
+        req.h_request,
         additional_headers,     /* Additional headers */
         -1L,                    /* Headers length (-1 = null-terminated) */
         WINHTTP_NO_REQUEST_DATA,
@@ -433,31 +565,29 @@ int http_get(const char *url, const char *token,
         char err_detail[128];
         snprintf(err_detail, sizeof(err_detail),
                  "WinHttpSendRequest failed (error code: %lu)", err);
-        log_error("network", NULL, err_detail);
-        WinHttpCloseHandle(h_request);
-        WinHttpCloseHandle(h_connect);
+        ctx->logger->log_error(ctx, "network", NULL, err_detail);
+        close_http_request(ctx, &req);
         return (err == ERROR_INTERNET_TIMEOUT) ? -2 : -1;
     }
 
     DBG("http_get: Request sent, waiting for response...");
 
     /* Receive the response */
-    if (!WinHttpReceiveResponse(h_request, NULL)) {
+    if (!WinHttpReceiveResponse(req.h_request, NULL)) {
         DWORD err = GetLastError();
         DBG("http_get: WinHttpReceiveResponse FAILED (error %lu)", err);
         char err_detail[128];
         snprintf(err_detail, sizeof(err_detail),
                  "WinHttpReceiveResponse failed (error code: %lu)", err);
-        log_error("network", NULL, err_detail);
-        WinHttpCloseHandle(h_request);
-        WinHttpCloseHandle(h_connect);
+        ctx->logger->log_error(ctx, "network", NULL, err_detail);
+        close_http_request(ctx, &req);
         return (err == ERROR_INTERNET_TIMEOUT) ? -2 : -1;
     }
 
     /* Read the HTTP status code */
     DWORD status_code = 0;
     DWORD status_size = sizeof(status_code);
-    WinHttpQueryHeaders(h_request,
+    WinHttpQueryHeaders(req.h_request,
                         WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                         WINHTTP_HEADER_NAME_BY_INDEX,
                         &status_code, &status_size,
@@ -471,21 +601,21 @@ int http_get(const char *url, const char *token,
 
     /* Parse rate limit headers before reading the body */
     if (rate_info != NULL) {
-        parse_rate_limit_headers(h_request, rate_info);
+        parse_rate_limit_headers(req.h_request, rate_info);
     }
 
     /* Read the response body into the caller's buffer */
     int total_read = 0;
     DWORD bytes_available = 0;
 
-    while (WinHttpQueryDataAvailable(h_request, &bytes_available)) {
+    while (WinHttpQueryDataAvailable(req.h_request, &bytes_available)) {
         if (bytes_available == 0) {
             break;  /* End of response */
         }
 
         int remaining = body_size - total_read - 1;
         if (remaining <= 0) {
-            log_event(LOG_WARNING, "network", NULL, "TRUNCATED",
+            ctx->logger->log_event(ctx, LOG_WARNING, "network", NULL, "TRUNCATED",
                       "HTTP response body exceeds buffer - data truncated");
             break;
         }
@@ -495,11 +625,11 @@ int http_get(const char *url, const char *token,
                               : (DWORD)remaining;
         DWORD bytes_read = 0;
 
-        if (!WinHttpReadData(h_request,
+        if (!WinHttpReadData(req.h_request,
                             response_body + total_read,
                             bytes_to_read,
                             &bytes_read)) {
-            log_error("network", NULL,
+            ctx->logger->log_error(ctx, "network", NULL,
                       "WinHttpReadData failed while reading response body");
             break;
         }
@@ -511,18 +641,17 @@ int http_get(const char *url, const char *token,
 
     DBG("http_get: Body read complete - %d bytes", total_read);
 
-    WinHttpCloseHandle(h_request);
-    WinHttpCloseHandle(h_connect);
+    close_http_request(ctx, &req);
 
     return 0;
 }
 
 
-void network_cleanup(void) {
+void network_cleanup(ghb_context *ctx) {
     if (g_hSession != NULL) {
         WinHttpCloseHandle(g_hSession);
         g_hSession = NULL;
-        log_event(LOG_INFO, "network", NULL, "OK",
+        ctx->logger->log_event(ctx, LOG_INFO, "network", NULL, "OK",
                   "WinHTTP session closed");
     }
 }
@@ -538,20 +667,20 @@ void network_cleanup(void) {
  * and work on all operating systems.
  * ================================================================ */
 
-int network_init(void) {
-    log_event(LOG_INFO, "network", NULL, "INFO",
+int network_init(ghb_context *ctx) {
+    ctx->logger->log_event(ctx, LOG_INFO, "network", NULL, "INFO",
               "Network module initialized (non-Windows - HTTP stubs active)");
     return 0;
 }
 
-int check_connectivity(int timeout_ms) {
+int check_connectivity(ghb_context *ctx, int timeout_ms) {
     (void)timeout_ms;
-    log_event(LOG_INFO, "network", NULL, "OK",
+    ctx->logger->log_event(ctx, LOG_INFO, "network", NULL, "OK",
               "Connectivity check skipped (non-Windows stub)");
     return 1;  /* Assume connectivity on non-Windows */
 }
 
-int http_get(const char *url, const char *token,
+int http_get(ghb_context *ctx, const char *url, const char *token,
              char *response_body, int body_size,
              int *response_code, rate_limit_info *rate_info,
              int timeout_ms) {
@@ -567,13 +696,13 @@ int http_get(const char *url, const char *token,
         rate_info->reset_time = 0;
         rate_info->headers_parsed = 0;
     }
-    log_event(LOG_WARNING, "network", NULL, "STUB",
+    ctx->logger->log_event(ctx, LOG_WARNING, "network", NULL, "STUB",
               "HTTP GET is a stub on non-Windows platforms");
     return -1;
 }
 
-void network_cleanup(void) {
-    log_event(LOG_INFO, "network", NULL, "OK",
+void network_cleanup(ghb_context *ctx) {
+    ctx->logger->log_event(ctx, LOG_INFO, "network", NULL, "OK",
               "Network cleanup (non-Windows - no-op)");
 }
 
@@ -669,11 +798,40 @@ int parse_json_string(const char *json, const char *key,
     }
     after_key++;  /* Skip opening quote */
 
-    /* Copy characters until closing quote or end of buffer */
+    /* Copy characters until closing quote or end of buffer.
+     * Handle JSON escape sequences: \", \\, \/, \n, \r, \t, \uXXXX.
+     */
     int i = 0;
     while (*after_key != '\0' && *after_key != '"' && i < value_len - 1) {
-        value_out[i] = *after_key;
-        i++;
+        if (*after_key == '\\' && *(after_key + 1) != '\0') {
+            after_key++;  /* Skip the backslash */
+            switch (*after_key) {
+                case '"':  value_out[i++] = '"';  break;
+                case '\\': value_out[i++] = '\\'; break;
+                case '/':  value_out[i++] = '/';  break;
+                case 'n':  value_out[i++] = '\n';  break;
+                case 'r':  value_out[i++] = '\r';  break;
+                case 't':  value_out[i++] = '\t';  break;
+                case 'u':  {
+                    /* \uXXXX — copy 4 hex digits as-is (no full Unicode support needed) */
+                    if (i + 4 < value_len) {
+                        value_out[i++] = '\\';
+                        value_out[i++] = 'u';
+                        value_out[i++] = *(after_key + 1);
+                        value_out[i++] = *(after_key + 2);
+                        value_out[i++] = *(after_key + 3);
+                        after_key += 3;  /* Skip the 3 digits we just copied */
+                    }
+                    break;
+                }
+                default:
+                    /* Unknown escape — keep the character after backslash as-is */
+                    value_out[i++] = *after_key;
+                    break;
+            }
+        } else {
+            value_out[i++] = *after_key;
+        }
         after_key++;
     }
     value_out[i] = '\0';
@@ -738,7 +896,7 @@ int parse_json_int(const char *json, const char *key, int *value_out) {
 
 #ifdef _WIN32
 
-int get_default_branch(const char *owner, const char *repo,
+int get_default_branch(ghb_context *ctx, const char *owner, const char *repo,
                        const char *token, char *branch_out,
                        int branch_len, int timeout_ms) {
     char url[MAX_URL_LEN];
@@ -751,7 +909,7 @@ int get_default_branch(const char *owner, const char *repo,
         int status_code = 0;
         rate_limit_info rate = {0, 0, 0};
 
-        int result = http_get(url, token, response, sizeof(response),
+        int result = http_get(ctx, url, token, response, sizeof(response),
                               &status_code, &rate, timeout_ms);
 
         if (result != 0) {
@@ -759,54 +917,35 @@ int get_default_branch(const char *owner, const char *repo,
             snprintf(detail, sizeof(detail),
                      "Network error querying repo metadata for %s/%s (result: %d)",
                      owner, repo, result);
-            log_error("network", repo, detail);
+            ctx->logger->log_error(ctx, "network", repo, detail);
             return -1;
         }
 
         if (status_code == HTTP_NOT_FOUND) {
-            log_event(LOG_WARNING, "network", repo, "NOT_FOUND",
+            ctx->logger->log_event(ctx, LOG_WARNING, "network", repo, "NOT_FOUND",
                       "Repository does not exist or token lacks access");
-            toast_error("Repository Not Found", repo);
+            ctx->notify->toast_error(ctx, "Repository Not Found", repo);
             return HTTP_NOT_FOUND;
         }
 
         if (status_code == HTTP_UNAUTHORIZED || status_code == HTTP_FORBIDDEN) {
-            log_event(LOG_ERROR, "network", repo, "AUTH_ERROR",
+            ctx->logger->log_event(ctx, LOG_ERROR, "network", repo, "AUTH_ERROR",
                       "Token is invalid, expired, or lacks required scope");
-            toast_error("Authentication Failed",
+            ctx->notify->toast_error(ctx, "Authentication Failed",
                        "Token is invalid or expired - check .env");
             return status_code;
         }
 
         if (status_code == HTTP_RATE_LIMITED) {
-            if (attempt == 0 && rate.headers_parsed && rate.reset_time > 0) {
+            if (attempt == 0) {
                 /* Spec Section 7: sleep until the reset window and retry */
-                time_t now = time(NULL);
-                long wait_seconds = (long)(rate.reset_time - (long)now);
-                if (wait_seconds > 0 && wait_seconds < 3600) {
-                    DBG("get_default_branch: Rate limited, sleeping %lds...", wait_seconds);
-                    char detail[256];
-                    snprintf(detail, sizeof(detail),
-                             "Rate limited - sleeping %ld seconds until reset window",
-                             wait_seconds);
-                    log_event(LOG_WARNING, "network", repo, "RATE_LIMITED", detail);
-                    toast_error("Rate Limited",
-                               "GitHub API rate limit - sleeping until reset");
-
-#ifdef _WIN32
-                    /* Sleep in 1-second intervals so we can be interrupted */
-                    for (long s = 0; s < wait_seconds; s++) {
-                        Sleep(1000);
-                    }
-#else
-                    sleep((unsigned int)wait_seconds);
-#endif
+                if (rate_limit_sleep(ctx, &rate, repo, "metadata") == 0) {
                     continue;  /* Retry */
                 }
             }
-            log_event(LOG_WARNING, "network", repo, "RATE_LIMITED",
+            ctx->logger->log_event(ctx, LOG_WARNING, "network", repo, "RATE_LIMITED",
                       "GitHub API rate limit reached");
-            toast_error("Rate Limited", "GitHub API rate limit reached");
+            ctx->notify->toast_error(ctx, "Rate Limited", "GitHub API rate limit reached");
             return HTTP_RATE_LIMITED;
         }
 
@@ -815,19 +954,19 @@ int get_default_branch(const char *owner, const char *repo,
             snprintf(detail, sizeof(detail),
                      "Unexpected HTTP status %d for %s/%s",
                      status_code, owner, repo);
-            log_error("network", repo, detail);
+            ctx->logger->log_error(ctx, "network", repo, detail);
             return status_code;
         }
 
         /* Extract the default_branch field from the JSON response */
         if (parse_json_string(response, JSON_FIELD_DEFAULT_BRANCH,
                               branch_out, branch_len) != 0) {
-            log_error("network", repo,
+            ctx->logger->log_error(ctx, "network", repo,
                       "Failed to parse default_branch from API response");
             return -1;
         }
 
-        log_event(LOG_INFO, "network", repo, "OK",
+        ctx->logger->log_event(ctx, LOG_INFO, "network", repo, "OK",
                   "Default branch resolved");
         return 0;
     }
@@ -837,239 +976,43 @@ int get_default_branch(const char *owner, const char *repo,
 }
 
 
-int download_repo_zip(const char *owner, const char *repo,
-                      const char *branch, const char *token,
-                      const char *output_path, int timeout_ms) {
-    DBG("download_repo_zip: Downloading %s/%s (branch: %s) to %s",
-        owner, repo, branch, output_path);
-
-    char url[MAX_URL_LEN];
-    snprintf(url, sizeof(url), "%s%s%s/%s%s%s",
-             GITHUB_API_BASE, API_REPOS_PATH,
-             owner, repo, API_ZIPBALL_PATH, branch);
-
-
-    if (g_hSession == NULL) {
-        log_error("network", repo,
-                  "Cannot download - session not initialized");
-        return -1;
-    }
-
-    /*
-     * Retry loop for rate limiting (Spec Section 7).
-     * On HTTP 429 with a valid X-RateLimit-Reset header, sleep until
-     * the reset window and retry the download once.
-     */
-    int attempt;
-    for (attempt = 0; attempt < 2; attempt++) {
-
-    /* Connect to the API host */
-
-    HINTERNET h_connect = WinHttpConnect(
-        g_hSession, GITHUB_API_HOST,
-        INTERNET_DEFAULT_HTTPS_PORT, 0);
-
-    DBG("download_repo_zip: Connecting to %S...", GITHUB_API_HOST);
-
-    if (h_connect == NULL) {
-        DWORD err = GetLastError();
-        DBG("download_repo_zip: WinHttpConnect FAILED (error %lu)", err);
-        log_error("network", repo,
-                  "WinHttpConnect failed for zip download");
-        return -1;
-    }
-
-    /* Extract path from URL */
-    const char *path_start = NULL;
-    int slash_count = 0;
-    for (const char *p = url; *p != '\0'; p++) {
-        if (*p == '/') {
-            slash_count++;
-            if (slash_count == 3) {
-                path_start = p;
-                break;
-            }
-        }
-    }
-
-    if (path_start == NULL) {
-        log_error("network", repo, "Cannot parse path from download URL");
-        WinHttpCloseHandle(h_connect);
-        return -1;
-    }
-
-    int path_len = (int)strlen(path_start);
-    wchar_t *wide_path = (wchar_t *)malloc(
-        ((size_t)path_len + 1) * sizeof(wchar_t));
-    if (wide_path == NULL) {
-        log_error("network", repo,
-                  "Memory allocation failed for download URL path");
-        WinHttpCloseHandle(h_connect);
-        return -1;
-    }
-    MultiByteToWideChar(CP_ACP, 0, path_start, -1,
-                        wide_path, path_len + 1);
-
-
-    DBG("download_repo_zip: Opening request for path %s...", path_start);
-
-    HINTERNET h_request = WinHttpOpenRequest(
-        h_connect, L"GET", wide_path,
-        NULL, WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-
-    free(wide_path);
-
-    if (h_request == NULL) {
-        DWORD err = GetLastError();
-        DBG("download_repo_zip: WinHttpOpenRequest FAILED (error %lu)", err);
-        (void)err;
-        log_error("network", repo,
-                  "WinHttpOpenRequest failed for zip download");
-        WinHttpCloseHandle(h_connect);
-        return -1;
-    }
-
-    /* Set timeouts */
-    DWORD timeout = to_winhttp_timeout(timeout_ms);
-    if (timeout > 0) {
-        WinHttpSetOption(h_request, WINHTTP_OPTION_RESOLVE_TIMEOUT,
-                         &timeout, sizeof(timeout));
-        WinHttpSetOption(h_request, WINHTTP_OPTION_CONNECT_TIMEOUT,
-                         &timeout, sizeof(timeout));
-        WinHttpSetOption(h_request, WINHTTP_OPTION_RECEIVE_TIMEOUT,
-                         &timeout, sizeof(timeout));
-    }
-
-    /*
-     * Build Authorization header if a token is provided.
-     * Uses separate char and wchar_t buffers to avoid the
-     * overlapping-buffer aliasing bug (see http_get above).
-     */
-    LPCWSTR additional_headers = NULL;
-    char auth_ascii[MAX_URL_LEN];
-    wchar_t auth_header[MAX_URL_LEN];
-
-    if (token != NULL && token[0] != '\0') {
-        snprintf(auth_ascii, sizeof(auth_ascii),
-                 "Authorization: Bearer %s\r\n", token);
-        MultiByteToWideChar(CP_ACP, 0, auth_ascii, -1,
-                            auth_header, MAX_URL_LEN);
-        additional_headers = auth_header;
-    }
-
-    /* Send request */
-    DBG("download_repo_zip: Sending request...");
-
-    if (!WinHttpSendRequest(h_request, additional_headers, -1L,
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
-        DWORD err = GetLastError();
-        DBG("download_repo_zip: WinHttpSendRequest FAILED (error %lu)", err);
-        char detail[128];
-        snprintf(detail, sizeof(detail),
-                 "WinHttpSendRequest failed for zip download (error: %lu)",
-                 err);
-        log_error("network", repo, detail);
-        WinHttpCloseHandle(h_request);
-        WinHttpCloseHandle(h_connect);
-        return (err == ERROR_INTERNET_TIMEOUT) ? -2 : -1;
-    }
-
-    DBG("download_repo_zip: Request sent, waiting for response...");
-
-    /* Receive response */
-    if (!WinHttpReceiveResponse(h_request, NULL)) {
-        DWORD err = GetLastError();
-        DBG("download_repo_zip: WinHttpReceiveResponse FAILED (error %lu)", err);
-        char detail[128];
-        snprintf(detail, sizeof(detail),
-                 "WinHttpReceiveResponse failed for zip download (error: %lu)",
-                 err);
-        log_error("network", repo, detail);
-        WinHttpCloseHandle(h_request);
-        WinHttpCloseHandle(h_connect);
-        return (err == ERROR_INTERNET_TIMEOUT) ? -2 : -1;
-    }
-
-    /* Check status code */
-    DWORD status_code = 0;
-    DWORD status_size = sizeof(status_code);
-    WinHttpQueryHeaders(h_request,
-                        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                        WINHTTP_HEADER_NAME_BY_INDEX,
-                        &status_code, &status_size,
-                        WINHTTP_NO_HEADER_INDEX);
-
-    DBG("download_repo_zip: Response - HTTP %lu", status_code);
-
-    if (status_code != HTTP_OK) {
-        DBG("download_repo_zip: Non-200 status (HTTP %lu)", status_code);
-        char detail[128];
-        snprintf(detail, sizeof(detail),
-                 "Zip download returned HTTP %lu for %s",
-                 status_code, repo);
-
-        if (status_code == HTTP_RATE_LIMITED) {
-            /*
-             * Spec Section 7: sleep until the reset window and retry.
-             * Read rate limit headers to determine wait time.
-             */
-            rate_limit_info rate = {0, 0, 0};
-            parse_rate_limit_headers(h_request, &rate);
-
-            WinHttpCloseHandle(h_request);
-            WinHttpCloseHandle(h_connect);
-
-            if (attempt == 0 && rate.headers_parsed && rate.reset_time > 0) {
-                time_t now = time(NULL);
-                long wait_seconds = (long)(rate.reset_time - (long)now);
-                if (wait_seconds > 0 && wait_seconds < 3600) {
-                    char rl_detail[256];
-                    snprintf(rl_detail, sizeof(rl_detail),
-                             "Rate limited on zip download - sleeping %ld seconds until reset window",
-                             wait_seconds);
-                    log_event(LOG_WARNING, "network", repo, "RATE_LIMITED", rl_detail);
-                    toast_error("Rate Limited",
-                               "GitHub API rate limit - sleeping until reset");
-
-                    for (long s = 0; s < wait_seconds; s++) {
-                        Sleep(1000);
-                    }
-                    continue;  /* Retry the download */
-                }
-            }
-
-            log_error("network", repo, detail);
-            toast_error("Rate Limited", repo);
-            return -1;
-        }
-
-        log_error("network", repo, detail);
-        WinHttpCloseHandle(h_request);
-        WinHttpCloseHandle(h_connect);
-        return -1;
-    }
-
-    /* Open output file for writing */
-    FILE *fp = fopen(output_path, "wb");
-    if (fp == NULL) {
-        log_error("network", repo,
-                  "Cannot open output file for zip download");
-        WinHttpCloseHandle(h_request);
-        WinHttpCloseHandle(h_connect);
-        return -1;
-    }
-
-
-    /* Stream response body to file in chunks */
+/*
+ * Stream the HTTP response body to an open file in chunks.
+ * Logs progress every 64KB (dev-phase visibility in viewer).
+ *
+ * The caller owns fp and req on ALL return paths — this function
+ * only streams; it does not close anything (Rule 37: the function
+ * that opened a resource is the one that closes it). On read or
+ * write failure, this function returns the error code and the
+ * caller is responsible for closing fp and req.
+ *
+ * Returns 0 on success, -1 on WinHttpReadData failure, -3 on write
+ * failure (possible disk full).
+ */
+static int stream_zip_to_file(ghb_context *ctx, http_request_handles *req,
+                              FILE *fp, const char *repo,
+                              unsigned long *out_total_downloaded)
+{
     DWORD bytes_available = 0;
     unsigned char chunk[HTTP_READ_CHUNK_SIZE];
     unsigned long total_downloaded = 0;
     unsigned long last_progress_log = 0;  /* For periodic progress logging */
 
-    while (WinHttpQueryDataAvailable(h_request, &bytes_available)) {
+    *out_total_downloaded = 0;
+
+    while (WinHttpQueryDataAvailable(req->h_request, &bytes_available)) {
         if (bytes_available == 0) {
             break;  /* End of response */
+        }
+
+        /*
+         * Check for shutdown request mid-download (Spec override per Sir R153).
+         * Original spec said "finish current download" — Sir wants immediate kill.
+         * Safe because atomic_write pattern means .tmp is deleted, old .zip intact.
+         */
+        if (ctx->should_stop && ctx->should_stop()) {
+            DBG("stream_zip_to_file: Shutdown requested mid-download (repo=%s)", repo);
+            return -5;  /* Shutdown requested — caller cleans up .tmp */
         }
 
         DWORD to_read = (bytes_available < HTTP_READ_CHUNK_SIZE)
@@ -1077,23 +1020,17 @@ int download_repo_zip(const char *owner, const char *repo,
                         : HTTP_READ_CHUNK_SIZE;
         DWORD bytes_read = 0;
 
-        if (!WinHttpReadData(h_request, chunk, to_read, &bytes_read)) {
-            log_error("network", repo,
+        if (!WinHttpReadData(req->h_request, chunk, to_read, &bytes_read)) {
+            ctx->logger->log_error(ctx, "network", repo,
                       "WinHttpReadData failed during zip download");
-            fclose(fp);
-            WinHttpCloseHandle(h_request);
-            WinHttpCloseHandle(h_connect);
             return -1;
         }
 
         size_t written = fwrite(chunk, 1, bytes_read, fp);
         if (written != bytes_read) {
-            log_error("network", repo,
+            ctx->logger->log_error(ctx, "network", repo,
                       "File write error during zip download - possible disk full");
-            fclose(fp);
-            WinHttpCloseHandle(h_request);
-            WinHttpCloseHandle(h_connect);
-            return -1;
+            return -3;  /* Disk full or write error */
         }
 
         total_downloaded += bytes_read;
@@ -1111,17 +1048,219 @@ int download_repo_zip(const char *owner, const char *repo,
         }
     }
 
-    DBG("download_repo_zip: Stream complete - total %lu KB (repo=%s)",
-        total_downloaded / 1024, repo);
+    *out_total_downloaded = total_downloaded;
+    return 0;
+}
 
+
+/*
+ * Attempt a single zip download. Builds the HTTP request, sends it,
+ * receives the response, checks the status code, opens the output
+ * file, streams the body, and cleans up the request handles and
+ * file pointer on every return path.
+ *
+ * On HTTP 429, parses the rate limit headers into *out_rate, sets
+ * *was_rate_limited to 1, and returns -4 WITHOUT sleeping — the
+ * caller (download_repo_zip) decides whether to retry and performs
+ * the rate_limit_sleep. This function does NOT log the error or
+ * fire the toast on 429; the caller does that when it gives up.
+ *
+ * Returns:
+ *   0  on success
+ *  -1  on generic error (request prep, send, receive, non-200
+ *      non-429, file open, read failure)
+ *  -2  on timeout (ERROR_INTERNET_TIMEOUT)
+ *  -3  on disk full / write error (fwrite mismatch)
+ *  -4  on rate limited (HTTP 429) — caller may retry
+ */
+static int try_download_once(ghb_context *ctx, const char *url, const char *token,
+                             const char *repo, const char *output_path,
+                             int timeout_ms, int *was_rate_limited,
+                             rate_limit_info *out_rate)
+{
+    http_request_handles req;
+    if (prepare_http_request(ctx, timeout_ms, token, url, repo, &req) != 0) {
+        return -1;
+    }
+
+    LPCWSTR additional_headers = req.auth_header;
+
+    /* Send request */
+    DBG("download_repo_zip: Sending request...");
+
+    if (!WinHttpSendRequest(req.h_request, additional_headers, -1L,
+                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+        DWORD err = GetLastError();
+        DBG("download_repo_zip: WinHttpSendRequest FAILED (error %lu)", err);
+        char detail[128];
+        snprintf(detail, sizeof(detail),
+                 "WinHttpSendRequest failed for zip download (error: %lu)",
+                 err);
+        ctx->logger->log_error(ctx, "network", repo, detail);
+        close_http_request(ctx, &req);
+        return (err == ERROR_INTERNET_TIMEOUT) ? -2 : -1;
+    }
+
+    DBG("download_repo_zip: Request sent, waiting for response...");
+
+    /* Receive response */
+    if (!WinHttpReceiveResponse(req.h_request, NULL)) {
+        DWORD err = GetLastError();
+        DBG("download_repo_zip: WinHttpReceiveResponse FAILED (error %lu)", err);
+        char detail[128];
+        snprintf(detail, sizeof(detail),
+                 "WinHttpReceiveResponse failed for zip download (error: %lu)",
+                 err);
+        ctx->logger->log_error(ctx, "network", repo, detail);
+        close_http_request(ctx, &req);
+        return (err == ERROR_INTERNET_TIMEOUT) ? -2 : -1;
+    }
+
+    /* Check status code */
+    DWORD status_code = 0;
+    DWORD status_size = sizeof(status_code);
+    WinHttpQueryHeaders(req.h_request,
+                        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                        WINHTTP_HEADER_NAME_BY_INDEX,
+                        &status_code, &status_size,
+                        WINHTTP_NO_HEADER_INDEX);
+
+    DBG("download_repo_zip: Response - HTTP %lu", status_code);
+
+    if (status_code != HTTP_OK) {
+        DBG("download_repo_zip: Non-200 status (HTTP %lu)", status_code);
+
+        if (status_code == HTTP_RATE_LIMITED) {
+            /*
+             * Spec Section 7: caller sleeps until the reset window and
+             * retries. Parse rate limit headers into *out_rate so the
+             * caller can sleep. The caller (download_repo_zip) decides
+             * whether to retry, performs the rate_limit_sleep, and
+             * logs/fires-toast only when it gives up. This function
+             * closes the request and returns -4 without sleeping.
+             */
+            parse_rate_limit_headers(req.h_request, out_rate);
+            close_http_request(ctx, &req);
+            *was_rate_limited = 1;
+            return -4;  /* Rate limited — caller may retry */
+        }
+
+        char detail[128];
+        snprintf(detail, sizeof(detail),
+                 "Zip download returned HTTP %lu for %s",
+                 status_code, repo);
+        ctx->logger->log_error(ctx, "network", repo, detail);
+        close_http_request(ctx, &req);
+        return -1;
+    }
+
+    /* Open output file for writing */
+    FILE *fp = fopen(output_path, "wb");
+    if (fp == NULL) {
+        ctx->logger->log_error(ctx, "network", repo,
+                  "Cannot open output file for zip download");
+        close_http_request(ctx, &req);
+        return -1;
+    }
+
+    /*
+     * Stream response body to file in chunks. stream_zip_to_file does
+     * NOT close fp or req — this function owns both and closes them on
+     * every return path (Rule 37: cleanup is the caller's job).
+     */
+    unsigned long total_downloaded = 0;
+    int stream_result = stream_zip_to_file(ctx, &req, fp, repo,
+                                           &total_downloaded);
+
+    if (stream_result == 0) {
+        DBG("download_repo_zip: Stream complete - total %lu KB (repo=%s)",
+            total_downloaded / 1024, repo);
+    }
 
     fclose(fp);
-    WinHttpCloseHandle(h_request);
-    WinHttpCloseHandle(h_connect);
+    close_http_request(ctx, &req);
 
-    log_event(LOG_INFO, "network", repo, "OK",
+    if (stream_result != 0) {
+        return stream_result;  /* -1 (read failure) or -3 (disk full) */
+    }
+
+    ctx->logger->log_event(ctx, LOG_INFO, "network", repo, "OK",
               "Zip archive downloaded successfully");
     return 0;
+}
+
+
+int download_repo_zip(ghb_context *ctx, const char *owner, const char *repo,
+                      const char *branch, const char *token,
+                      const char *output_path, int timeout_ms) {
+    DBG("download_repo_zip: Downloading %s/%s (branch: %s) to %s",
+        owner, repo, branch, output_path);
+
+    char url[MAX_URL_LEN];
+    snprintf(url, sizeof(url), "%s%s%s/%s%s%s",
+             GITHUB_API_BASE, API_REPOS_PATH,
+             owner, repo, API_ZIPBALL_PATH, branch);
+
+
+    if (g_hSession == NULL) {
+        ctx->logger->log_error(ctx, "network", repo,
+                  "Cannot download - session not initialized");
+        return -1;
+    }
+
+    /*
+     * Retry loop for rate limiting (Spec Section 7).
+     * On HTTP 429 with a valid X-RateLimit-Reset header, sleep until
+     * the reset window and retry the download once. All other errors
+     * (-1, -2, -3) return immediately — only rate limiting triggers
+     * a retry, matching the original single-function behavior.
+     */
+    int attempt;
+    for (attempt = 0; attempt < 2; attempt++) {
+        int was_rate_limited = 0;
+        rate_limit_info rate = {0, 0, 0};
+
+        int result = try_download_once(ctx, url, token, repo, output_path,
+                                       timeout_ms, &was_rate_limited, &rate);
+
+        if (result == 0) {
+            return 0;  /* Success */
+        }
+
+        if (result == -4 && was_rate_limited) {
+            /*
+             * Spec Section 7: on the first 429, sleep until the reset
+             * window and retry. rate_limit_sleep logs the WARNING event
+             * and fires the "Rate Limited" toast with the reset time.
+             * try_download_once already parsed *rate and closed the
+             * request before returning -4.
+             */
+            if (attempt == 0 &&
+                rate_limit_sleep(ctx, &rate, repo, "zip download") == 0) {
+                continue;  /* Retry the download */
+            }
+
+            /*
+             * Either this is the second 429 (attempt == 1), or
+             * rate_limit_sleep could not sleep (invalid/missing
+             * headers, or wait window too long). Log the error, fire
+             * the toast with the repo name, and give up. This matches
+             * the original give-up path exactly.
+             */
+            char detail[128];
+            snprintf(detail, sizeof(detail),
+                     "Zip download returned HTTP %lu for %s",
+                     (unsigned long)HTTP_RATE_LIMITED, repo);
+            ctx->logger->log_error(ctx, "network", repo, detail);
+            ctx->notify->toast_error(ctx, "Rate Limited", repo);
+            return -4;  /* Rate limited — maps to BACKUP_RATE_LIMITED */
+        }
+
+        /*
+         * Any other non-zero result (-1, -2, -3): return immediately.
+         * Only rate limiting triggers retry.
+         */
+        return result;
     }  /* end retry loop */
 
     /* Should not reach here - the loop only continues on rate limit retry */
@@ -1133,25 +1272,27 @@ int download_repo_zip(const char *owner, const char *repo,
 
 /* Non-Windows stubs for the convenience functions */
 
-int get_default_branch(const char *owner, const char *repo,
+int get_default_branch(ghb_context *ctx, const char *owner, const char *repo,
                        const char *token, char *branch_out,
                        int branch_len, int timeout_ms) {
     (void)owner; (void)repo; (void)token; (void)timeout_ms;
     if (branch_out != NULL && branch_len > 0) {
         branch_out[0] = '\0';
     }
-    log_event(LOG_WARNING, "network", repo, "STUB",
+    ctx->logger->log_event(ctx, LOG_WARNING, "network", repo, "STUB",
               "get_default_branch is a stub on non-Windows platforms");
     return -1;
 }
 
-int download_repo_zip(const char *owner, const char *repo,
+int download_repo_zip(ghb_context *ctx, const char *owner, const char *repo,
                       const char *branch, const char *token,
                       const char *output_path, int timeout_ms) {
     (void)owner; (void)repo; (void)branch;
     (void)token; (void)output_path; (void)timeout_ms;
-    log_event(LOG_WARNING, "network", NULL, "STUB",
+    ctx->logger->log_event(ctx, LOG_WARNING, "network", NULL, "STUB",
               "download_repo_zip is a stub on non-Windows platforms");
+    /* Return -1 (network error) to match Windows error code semantics.
+     * Other codes: -2 (timeout), -3 (disk full), -4 (rate limited). */
     return -1;
 }
 

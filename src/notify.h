@@ -22,14 +22,16 @@
 #ifndef NOTIFY_H
 #define NOTIFY_H
 
+#include "notify_iface.h"
 
 /**
  * Initialize the COM subsystem required for Windows toast notifications.
  * Must be called once at startup before any toast function.
  *
+ * @param ctx     Runtime context (for dependency-injected logger calls)
  * @return 0 on success, -1 if COM initialization fails
  */
-int notify_init(void);
+int notify_init(ghb_context *ctx);
 
 
 /**
@@ -40,7 +42,7 @@ int notify_init(void);
  * @param title   Toast title (e.g., "Backup Cycle")
  * @param message Toast body text (e.g., "Starting backup for 3 repos")
  */
-void toast_info(const char *title, const char *message);
+void toast_info(ghb_context *ctx, const char *title, const char *message);
 
 
 /**
@@ -50,7 +52,7 @@ void toast_info(const char *title, const char *message);
  * @param repo    Repository name that was backed up
  * @param message Additional detail (e.g., "Saved 2.3 MB")
  */
-void toast_success(const char *repo, const char *message);
+void toast_success(ghb_context *ctx, const char *repo, const char *message);
 
 
 /**
@@ -61,13 +63,13 @@ void toast_success(const char *repo, const char *message);
  * @param title   Error category (e.g., "Download Failed", "Rate Limited")
  * @param message Error detail (e.g., "repo-name: HTTP 404")
  */
-void toast_error(const char *title, const char *message);
+void toast_error(ghb_context *ctx, const char *title, const char *message);
 
 
 /**
  * Release COM resources. Called on graceful shutdown.
  */
-void notify_cleanup(void);
+void notify_cleanup(ghb_context *ctx);
 
 
 #endif /* NOTIFY_H */

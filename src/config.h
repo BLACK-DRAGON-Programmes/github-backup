@@ -14,6 +14,7 @@
 #define CONFIG_H
 
 #include "constants.h"
+#include "context.h"
 
 #include <stddef.h>
 
@@ -50,20 +51,22 @@ typedef struct {
  * in env.example). Missing mandatory values (GITHUB_BASE_URL, REPOS)
  * result in an error return.
  *
+ * @param ctx     Dependency injection context (logger, notify)
  * @param config  Pointer to the config struct to populate
  * @return 0 on success, -1 if .env is missing or mandatory fields are absent
  */
-int parse_env_file(backup_config *config);
+int parse_env_file(ghb_context *ctx, backup_config *config);
 
 
 /**
  * Construct the full path to the .env file by appending ".env" to
  * the executable's directory. The .env file sits next to the exe.
  *
+ * @param ctx        Dependency injection context (logger)
  * @param exe_dir    The directory containing the running executable
  * @param path_out   Output buffer (at least MAX_URL_LEN bytes)
  */
-void build_env_path(const char *exe_dir, char *path_out);
+void build_env_path(ghb_context *ctx, const char *exe_dir, char *path_out);
 
 
 /**
@@ -90,10 +93,11 @@ int ensure_dir_exists(const char *path);
  * Construct the full path to the log file by appending "backup.log"
  * to the backup directory.
  *
+ * @param ctx         Dependency injection context (logger)
  * @param backup_dir  The BACKUP_DIR value
  * @param path_out    Output buffer (at least MAX_URL_LEN bytes)
  */
-void build_log_path(const char *backup_dir, char *path_out);
+void build_log_path(ghb_context *ctx, const char *backup_dir, char *path_out);
 
 
 /**
@@ -128,12 +132,13 @@ int extract_owner(const char *base_url, char *owner_out);
  * Parse the raw REPOS string into an array of individual repo names.
  * Trims whitespace around names, skips comments (#) and blanks.
  *
+ * @param ctx         Dependency injection context (logger)
  * @param repos_raw   The raw comma-separated string from .env
  * @param repos       Output array of repo names
  * @param count       Output: number of repos parsed
  * @return 0 on success, -1 if the array would exceed MAX_REPOS
  */
-int parse_repos(const char *repos_raw,
+int parse_repos(ghb_context *ctx, const char *repos_raw,
                 char repos[][MAX_REPO_NAME_LEN], int *count);
 
 
@@ -142,10 +147,11 @@ int parse_repos(const char *repos_raw,
  * GITHUB_BASE_URL and REPOS are mandatory. Configurable values
  * already have defaults from parse_env_file.
  *
+ * @param ctx     Dependency injection context (logger, notify)
  * @param config  The config struct to validate
  * @return 0 if valid, -1 if mandatory fields are missing
  */
-int validate_config(const backup_config *config);
+int validate_config(ghb_context *ctx, const backup_config *config);
 
 
 /**

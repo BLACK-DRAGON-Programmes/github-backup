@@ -15,7 +15,7 @@
 #ifndef NETWORK_H
 #define NETWORK_H
 
-#include "constants.h"
+#include "network_iface.h"
 
 
 /* ================================================================
@@ -91,7 +91,7 @@ typedef struct {
  *
  * @return 0 on success, -1 if WinHTTP session could not be opened
  */
-int network_init(void);
+int network_init(ghb_context *ctx);
 
 
 /**
@@ -105,7 +105,7 @@ int network_init(void);
  * @param timeout_ms  Maximum time to wait for connectivity response
  * @return 1 if internet is available, 0 if not
  */
-int check_connectivity(int timeout_ms);
+int check_connectivity(ghb_context *ctx, int timeout_ms);
 
 
 /**
@@ -125,7 +125,7 @@ int check_connectivity(int timeout_ms);
  * @param timeout_ms    Request timeout in milliseconds
  * @return 0 on success (response received), -1 on network error, -2 on timeout
  */
-int http_get(const char *url, const char *token,
+int http_get(ghb_context *ctx, const char *url, const char *token,
              char *response_body, int body_size,
              int *response_code, rate_limit_info *rate_info,
              int timeout_ms);
@@ -180,7 +180,7 @@ int parse_json_int(const char *json, const char *key, int *value_out);
  * @return 0 on success, -1 on network/parse error, or the HTTP status
  *         code (404, 401, 403, 429, etc.) on API failures
  */
-int get_default_branch(const char *owner, const char *repo,
+int get_default_branch(ghb_context *ctx, const char *owner, const char *repo,
                        const char *token, char *branch_out,
                        int branch_len, int timeout_ms);
 
@@ -202,7 +202,7 @@ int get_default_branch(const char *owner, const char *repo,
  * @param timeout_ms   HTTP request timeout in milliseconds
  * @return 0 on success, -1 on failure (network error, write error, disk full)
  */
-int download_repo_zip(const char *owner, const char *repo,
+int download_repo_zip(ghb_context *ctx, const char *owner, const char *repo,
                       const char *branch, const char *token,
                       const char *output_path, int timeout_ms);
 
@@ -211,7 +211,7 @@ int download_repo_zip(const char *owner, const char *repo,
  * Close the WinHTTP session handle and release network resources.
  * Called on graceful shutdown.
  */
-void network_cleanup(void);
+void network_cleanup(ghb_context *ctx);
 
 
 #endif /* NETWORK_H */

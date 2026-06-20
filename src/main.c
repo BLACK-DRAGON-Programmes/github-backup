@@ -20,6 +20,8 @@
  *   backup.exe              → viewer mode (or spawn daemon then viewer)
  *   backup.exe --daemon     → headless daemon mode (CREATE_NO_WINDOW)
  *   backup.exe --shutdown   → signal running daemon to exit gracefully
+ *   backup.exe --register   → register Task Scheduler auto-start
+ *   backup.exe --unregister → remove Task Scheduler auto-start
  *
  * Two-process architecture (Spec Section 10):
  *   The daemon is the headless backup worker - owns the mutex, runs the
@@ -56,6 +58,7 @@
 #include "network.h"
 #include "backup.h"
 #include "console.h"
+#include "context.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -71,22 +74,91 @@
 
 
 /* ================================================================
+ * COMPOSITION ROOT — Real Implementations
+ *
+ * These static const structs wire the concrete implementations into
+ * the ghb_context. The composition root (main.c) is the ONLY file
+ * that knows about all the concrete implementations — every other
+ * module depends only on the interface headers.
+ *
+ * To use a different backend (e.g., GitLab instead of GitHub),
+ * replace the function pointers in network_ops with the alternative
+ * implementation's functions. No changes needed in any other file.
+ * ================================================================ */
+
+static const logger_ops real_logger = {
+    .log_event              = log_event,
+    .log_error              = log_error,
+    .log_init               = log_init,
+    .log_close              = log_close,
+    .rotate_log             = rotate_log,
+};
+
+static const notify_ops real_notify = {
+    .toast_info     = toast_info,
+    .toast_success  = toast_success,
+    .toast_error    = toast_error,
+    .notify_init    = notify_init,
+    .notify_cleanup = notify_cleanup,
+};
+
+static const network_ops real_network = {
+    .get_default_branch = get_default_branch,
+    .download_repo_zip  = download_repo_zip,
+    .check_connectivity = check_connectivity,
+    .network_init       = network_init,
+    .network_cleanup    = network_cleanup,
+};
+
+
+/* ================================================================
  * SHUTDOWN STATE
  * ================================================================ */
 
 /**
  * Flag set by the SIGINT handler (Ctrl+C) to request graceful shutdown.
- * Checked at the start of each main loop iteration.
+ * Checked at the start of each main loop iteration and between repos
+ * in run_backup_cycle() via the should_stop function pointer.
  */
 static volatile int g_shutdown_requested = 0;
 
 #ifdef _WIN32
-/** Handle to the named shutdown event. Checked during sleep intervals. */
+/** Handle to the named shutdown event. Checked by check_shutdown_requested()
+ * (non-blocking poll) and sleep_with_shutdown_check() (blocking poll). */
 static HANDLE g_shutdown_event = NULL;
 
 /** Handle to the named mutex. Held for the lifetime of the daemon. */
 static HANDLE g_backup_mutex = NULL;
 #endif
+
+/**
+ * Shutdown check function for the DI context.
+ * Returns non-zero when a graceful shutdown has been requested.
+ * Wired into ghb_context.should_stop in main().
+ *
+ * Polls the named shutdown event (non-blocking) AND checks the flag.
+ * The event is signaled by the viewer's 'q' key or --shutdown flag.
+ * Without polling the event here, the flag is only updated during sleep
+ * intervals, leaving downloads unresponsive to shutdown (R154 fix).
+ */
+static int check_shutdown_requested(void) {
+#ifdef _WIN32
+    /* Non-blocking poll of the named shutdown event.
+     * WaitForSingleObject with 0 timeout returns immediately:
+     *   WAIT_OBJECT_0 (0) = event is signaled
+     *   WAIT_TIMEOUT (258) = event is not signaled
+     *   WAIT_FAILED = error (treat as not signaled) */
+    if (g_shutdown_event != NULL) {
+        DWORD result = WaitForSingleObject(g_shutdown_event, 0);
+        if (result == WAIT_OBJECT_0) {
+            g_shutdown_requested = 1;
+        }
+    }
+#endif
+    return g_shutdown_requested;
+}
+
+
 
 
 /* ================================================================
@@ -174,6 +246,138 @@ static int signal_shutdown(void) {
 #else
     printf("Shutdown signal not supported on this platform.\n");
     return -1;
+#endif
+}
+
+
+/* ================================================================
+ * TASK SCHEDULER REGISTRATION (Windows only)
+ *
+ * Spec Section 3: "Windows Task Scheduler. A scheduled task triggers
+ * backup.exe --daemon at system startup (runs even if nobody is logged in)."
+ *
+ * Uses schtasks.exe to create/delete a scheduled task. The task runs
+ * backup.exe --daemon at system startup with highest privileges.
+ * ================================================================ */
+
+/** Name of the scheduled task in Windows Task Scheduler. */
+static const char *TASK_NAME = "GitHubBackupDaemon";
+
+/**
+ * Register a Windows Task Scheduler entry to launch backup.exe --daemon
+ * at system startup. The task runs with highest privileges and does not
+ * require a user to be logged in.
+ *
+ * @param ctx  Context for logging
+ * @return 0 on success, -1 on failure
+ */
+static int register_task_scheduler(ghb_context *ctx) {
+#ifdef _WIN32
+    char exe_path[MAX_URL_LEN];
+    DWORD len = GetModuleFileNameA(NULL, exe_path, MAX_URL_LEN);
+    if (len == 0 || len >= MAX_URL_LEN) {
+        ctx->logger->log_error(ctx, "main", NULL,
+                  "Cannot determine exe path for Task Scheduler registration");
+        return -1;
+    }
+
+    /*
+     * Build schtasks command:
+     *   schtasks /create /tn "GitHubBackupDaemon" /tr "\"exe_path\" --daemon"
+     *   /sc onstart /ru SYSTEM /rl HIGHEST /f
+     *
+     * /sc onstart   - trigger at system startup
+     * /ru SYSTEM    - run as SYSTEM (works even when nobody is logged in)
+     * /rl HIGHEST   - run with highest privileges
+     * /f            - force create (overwrite if exists)
+     *
+     * The exe path is double-quoted inside the /tr argument to handle
+     * paths containing spaces.
+     */
+    char cmd[MAX_URL_LEN * 2];
+    snprintf(cmd, sizeof(cmd),
+             "schtasks /create /tn \"%s\" /tr \"\\\"%s\\\" --daemon\" "
+             "/sc onstart /ru SYSTEM /rl HIGHEST /f",
+             TASK_NAME, exe_path);
+
+    DBG("register_task_scheduler: Running: %s", cmd);
+
+    int result = system(cmd);
+    if (result != 0) {
+        ctx->logger->log_error(ctx, "main", NULL,
+                  "schtasks /create failed - Task Scheduler registration failed");
+        fprintf(stderr, "Error: Failed to register Task Scheduler task.\n");
+        fprintf(stderr, "Try running as administrator.\n");
+        return -1;
+    }
+
+    ctx->logger->log_event(ctx, LOG_SUCCESS, "main", NULL, "OK",
+              "Task Scheduler task registered - daemon will start at system startup");
+    printf("Task Scheduler: Registered '%s' to run at system startup.\n", TASK_NAME);
+    return 0;
+#else
+    (void)ctx;
+    printf("Task Scheduler registration is only available on Windows.\n");
+    return -1;
+#endif
+}
+
+/**
+ * Unregister the Windows Task Scheduler entry.
+ *
+ * @param ctx  Context for logging
+ * @return 0 on success, -1 on failure
+ */
+static int unregister_task_scheduler(ghb_context *ctx) {
+#ifdef _WIN32
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+             "schtasks /delete /tn \"%s\" /f", TASK_NAME);
+
+    DBG("unregister_task_scheduler: Running: %s", cmd);
+
+    int result = system(cmd);
+    if (result != 0) {
+        ctx->logger->log_error(ctx, "main", NULL,
+                  "schtasks /delete failed - Task Scheduler unregistration failed");
+        fprintf(stderr, "Error: Failed to unregister Task Scheduler task.\n");
+        fprintf(stderr, "The task may not exist. Try running as administrator.\n");
+        return -1;
+    }
+
+    ctx->logger->log_event(ctx, LOG_SUCCESS, "main", NULL, "OK",
+              "Task Scheduler task removed - daemon will no longer start at system startup");
+    printf("Task Scheduler: Unregistered '%s'.\n", TASK_NAME);
+    return 0;
+#else
+    (void)ctx;
+    printf("Task Scheduler unregistration is only available on Windows.\n");
+    return -1;
+#endif
+}
+
+/**
+ * Check whether the Task Scheduler task is registered.
+ *
+ * @param ctx  Context for logging
+ * @return 1 if registered, 0 if not registered, -1 on error
+ */
+static int is_task_scheduler_registered(ghb_context *ctx) {
+#ifdef _WIN32
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+             "schtasks /query /tn \"%s\" >nul 2>&1", TASK_NAME);
+
+    int result = system(cmd);
+    if (result == 0) {
+        ctx->logger->log_event(ctx, LOG_INFO, "main", NULL, "OK",
+                  "Task Scheduler task is registered");
+        return 1;
+    }
+    return 0;
+#else
+    (void)ctx;
+    return 0;
 #endif
 }
 
@@ -296,7 +500,7 @@ static int spawn_daemon(void) {
  * Ctrl+C and closing the terminal kill only the viewer - the daemon
  * continues running unaffected.
  */
-static void enter_viewer_mode(void) {
+static void enter_viewer_mode(ghb_context *ctx) {
 #ifdef _WIN32
     /* Initialize console for ANSI output */
     console_init();
@@ -309,10 +513,10 @@ static void enter_viewer_mode(void) {
     memset(&cfg, 0, sizeof(backup_config));
     snprintf(cfg.backup_dir, sizeof(cfg.backup_dir), "%s", exe_dir);
     apply_defaults(&cfg);
-    parse_env_file(&cfg);
+    parse_env_file(ctx, &cfg);
 
     char log_path[MAX_URL_LEN];
-    build_log_path(cfg.backup_dir, log_path);
+    build_log_path(ctx, cfg.backup_dir, log_path);
 
     /* Enter the log viewer - blocks until q pressed, Ctrl+C, or window closed */
     console_log_viewer(log_path);
@@ -341,13 +545,13 @@ static int validate_env_exists(const char *env_path) {
  * MAIN LOOP
  * ================================================================ */
 
-static void run_main_loop(backup_config *config, const char *exe_dir) {
+static void run_main_loop(ghb_context *ctx, backup_config *config, const char *exe_dir) {
     for (;;) {
         /* Check for shutdown request (shutdown event or --shutdown signal) */
         if (g_shutdown_requested) {
-            log_event(LOG_INFO, "main", NULL, "STOPPING",
+            ctx->logger->log_event(ctx, LOG_INFO, "main", NULL, "STOPPING",
                       "Shutdown requested - exiting gracefully");
-            toast_info("Shutting Down",
+            ctx->notify->toast_info(ctx, "Shutting Down",
                        "GitHub Backup is shutting down gracefully");
             break;
         }
@@ -357,10 +561,10 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
          * If no internet, skip the cycle and sleep.
          */
         DBG("main_loop: Checking connectivity...");
-        if (!check_connectivity(config->connectivity_timeout)) {
-            log_event(LOG_WARNING, "main", NULL, "SKIPPED",
+        if (!ctx->network->check_connectivity(ctx, config->connectivity_timeout)) {
+            ctx->logger->log_event(ctx, LOG_WARNING, "main", NULL, "SKIPPED",
                       "No internet detected - cycle skipped");
-            toast_info("No Internet",
+            ctx->notify->toast_info(ctx, "No Internet",
                        "No internet detected - cycle skipped");
             sleep_with_shutdown_check(config->cycle_interval, config);
             continue;
@@ -375,20 +579,19 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
                  "%s", exe_dir);
 
         DBG("main_loop: Re-reading .env...");
-        if (parse_env_file(&cycle_config) != 0) {
-            log_error("main", NULL,
-                      "Failed to parse .env - skipping this cycle");
-            toast_error("Config Error",
-                        "Failed to parse .env - skipping this cycle");
-            sleep_with_shutdown_check(config->cycle_interval, config);
-            continue;
+        if (parse_env_file(ctx, &cycle_config) != 0) {
+            ctx->logger->log_error(ctx, "main", NULL,
+                      "Failed to parse .env - corrupt file requires manual intervention - exiting");
+            ctx->notify->toast_error(ctx, "Config Error",
+                        ".env file is corrupt or missing - exiting (requires manual intervention)");
+            break;
         }
 
         /* Ensure BACKUP_DIR exists */
         if (ensure_dir_exists(cycle_config.backup_dir) != 0) {
-            log_error("main", NULL,
+            ctx->logger->log_error(ctx, "main", NULL,
                       "Cannot create or access BACKUP_DIR - skipping this cycle");
-            toast_error("Directory Error",
+            ctx->notify->toast_error(ctx, "Directory Error",
                         "Cannot create BACKUP_DIR - check permissions");
             sleep_with_shutdown_check(config->cycle_interval, config);
             continue;
@@ -401,8 +604,8 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
         snprintf(start_msg, sizeof(start_msg),
                  "Starting backup cycle for %d repositories",
                  cycle_config.repo_count);
-        log_event(LOG_INFO, "main", NULL, "CYCLE_START", start_msg);
-        toast_info("Backup Cycle", start_msg);
+        ctx->logger->log_event(ctx, LOG_INFO, "main", NULL, "CYCLE_START", start_msg);
+        ctx->notify->toast_info(ctx, "Backup Cycle", start_msg);
 
         /*
          * Step 4: Run the backup cycle.
@@ -410,7 +613,7 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
         int succeeded = 0;
         int failed = 0;
 
-        int cycle_result = run_backup_cycle(&cycle_config,
+        int cycle_result = run_backup_cycle(ctx, &cycle_config,
                                             &succeeded, &failed);
 
         /*
@@ -426,18 +629,18 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
                      "Backup cycle complete: %d succeeded, %d failed",
                      succeeded, failed);
         }
-        log_event(LOG_INFO, "main", NULL, "CYCLE_COMPLETE", complete_msg);
-        toast_info("Cycle Complete", complete_msg);
+        ctx->logger->log_event(ctx, LOG_INFO, "main", NULL, "CYCLE_COMPLETE", complete_msg);
+        ctx->notify->toast_info(ctx, "Cycle Complete", complete_msg);
 
         /*
          * Step 6: Rotate log if it exceeds the size threshold.
          */
-        rotate_log(cycle_config.log_max_size);
+        ctx->logger->rotate_log(ctx, cycle_config.log_max_size);
 
         /*
          * Step 7: Sleep until the next cycle (with shutdown polling).
          */
-        log_event(LOG_INFO, "main", NULL, "SLEEP",
+        ctx->logger->log_event(ctx, LOG_INFO, "main", NULL, "SLEEP",
                   "Sleeping until next cycle");
         sleep_with_shutdown_check(cycle_config.cycle_interval, &cycle_config);
     }
@@ -455,7 +658,7 @@ static void run_main_loop(backup_config *config, const char *exe_dir) {
  *
  * Returns 0 on clean exit, 1 on startup failure.
  */
-static int run_daemon(void) {
+static int run_daemon(ghb_context *ctx) {
     /*
      * Step 1: Determine where the executable lives.
      */
@@ -465,9 +668,9 @@ static int run_daemon(void) {
 
     if (exe_dir[0] == '\0') {
         fprintf(stderr, "Error: Cannot determine executable directory\n");
-        toast_error("Startup Error",
+        ctx->notify->toast_error(ctx, "Startup Error",
                     "Cannot determine executable directory - exiting");
-        notify_cleanup();
+        ctx->notify->notify_cleanup(ctx);
         return 1;
     }
 
@@ -475,13 +678,13 @@ static int run_daemon(void) {
      * Step 2: Find and validate .env - it sits next to the exe.
      */
     char env_path[MAX_URL_LEN];
-    build_env_path(exe_dir, env_path);
+    build_env_path(ctx, exe_dir, env_path);
     DBG("main: Validating .env at %s", env_path);
 
     if (validate_env_exists(env_path) != 0) {
-        toast_error("Config Error",
+        ctx->notify->toast_error(ctx, "Config Error",
                     "Config file (.env) not found next to executable - exiting");
-        notify_cleanup();
+        ctx->notify->notify_cleanup(ctx);
         return 1;
     }
 
@@ -493,10 +696,10 @@ static int run_daemon(void) {
     snprintf(config.backup_dir, sizeof(config.backup_dir), "%s", exe_dir);
 
     DBG("main: Parsing .env...");
-    if (parse_env_file(&config) != 0) {
-        toast_error("Config Error",
+    if (parse_env_file(ctx, &config) != 0) {
+        ctx->notify->toast_error(ctx, "Config Error",
                     "Config validation failed - exiting (requires manual intervention)");
-        notify_cleanup();
+        ctx->notify->notify_cleanup(ctx);
         return 1;
     }
 
@@ -508,9 +711,9 @@ static int run_daemon(void) {
      */
     DBG("main: Ensuring BACKUP_DIR exists: %s", config.backup_dir);
     if (ensure_dir_exists(config.backup_dir) != 0) {
-        toast_error("Directory Error",
+        ctx->notify->toast_error(ctx, "Directory Error",
                     "Cannot create BACKUP_DIR - check permissions and path");
-        notify_cleanup();
+        ctx->notify->notify_cleanup(ctx);
         return 1;
     }
 
@@ -518,10 +721,10 @@ static int run_daemon(void) {
      * Step 5: Initialize the log file in BACKUP_DIR.
      */
     char log_path[MAX_URL_LEN];
-    build_log_path(config.backup_dir, log_path);
+    build_log_path(ctx, config.backup_dir, log_path);
     DBG("main: Initializing log file at %s", log_path);
-    if (log_init(log_path) != 0) {
-        toast_error("Log Error",
+    if (ctx->logger->log_init(ctx, log_path) != 0) {
+        ctx->notify->toast_error(ctx, "Log Error",
                     "Cannot open log file - continuing without file logging");
     }
 
@@ -531,24 +734,24 @@ static int run_daemon(void) {
      * Without these, the viewer sees an empty log file for 30+ seconds
      * while the daemon runs connectivity checks and downloads.
      */
-    log_event(LOG_INFO, "daemon", NULL, "STARTUP",
+    ctx->logger->log_event(ctx, LOG_INFO, "daemon", NULL, "STARTUP",
               "Log file initialized - daemon startup in progress");
 
     /*
      * Step 6: Initialize the network session.
      */
     DBG("main: Initializing network (WinHTTP)...");
-    if (network_init() != 0) {
-        log_error("startup", NULL,
+    if (ctx->network->network_init(ctx) != 0) {
+        ctx->logger->log_error(ctx, "startup", NULL,
                   "Network initialization failed - cannot proceed");
-        toast_error("Network Error",
+        ctx->notify->toast_error(ctx, "Network Error",
                     "Failed to initialize HTTP session - exiting");
-        log_close();
-        notify_cleanup();
+        ctx->logger->log_close(ctx);
+        ctx->notify->notify_cleanup(ctx);
         return 1;
     }
 
-    log_event(LOG_INFO, "daemon", NULL, "STARTUP",
+    ctx->logger->log_event(ctx, LOG_INFO, "daemon", NULL, "STARTUP",
               "Network initialized - checking connectivity next");
 
     /*
@@ -560,7 +763,7 @@ static int run_daemon(void) {
     g_shutdown_event = CreateEventA(NULL, TRUE, FALSE,
                                    BACKUP_SHUTDOWN_EVENT_NAME);
     if (g_shutdown_event == NULL) {
-        log_event(LOG_WARNING, "main", NULL, "EVENT_WARN",
+        ctx->logger->log_event(ctx, LOG_WARNING, "main", NULL, "EVENT_WARN",
                   "Cannot create shutdown event - --shutdown will not work");
     }
 #endif
@@ -568,31 +771,31 @@ static int run_daemon(void) {
     /*
      * Step 8: Fire "service started" toast.
      */
-    log_event(LOG_INFO, "main", NULL, "STARTED",
+    ctx->logger->log_event(ctx, LOG_INFO, "main", NULL, "STARTED",
               "GitHub Backup daemon started successfully");
-    toast_info("Service Started",
+    ctx->notify->toast_info(ctx, "Service Started",
                "GitHub Backup daemon is running in the background");
 
     /*
      * DEV PHASE: Log the first connectivity check immediately.
      * This gives the viewer something to show within seconds of startup.
      */
-    log_event(LOG_INFO, "daemon", NULL, "PROGRESS",
+    ctx->logger->log_event(ctx, LOG_INFO, "daemon", NULL, "PROGRESS",
               "About to check internet connectivity...");
 
     /*
      * Step 9: Enter the main backup loop.
      */
-    run_main_loop(&config, exe_dir);
+    run_main_loop(ctx, &config, exe_dir);
 
     /*
      * Cleanup.
      */
-    log_event(LOG_INFO, "main", NULL, "STOPPED",
+    ctx->logger->log_event(ctx, LOG_INFO, "main", NULL, "STOPPED",
               "GitHub Backup daemon shutting down");
-    log_close();
-    network_cleanup();
-    notify_cleanup();
+    ctx->logger->log_close(ctx);
+    ctx->network->network_cleanup(ctx);
+    ctx->notify->notify_cleanup(ctx);
 
 #ifdef _WIN32
     if (g_shutdown_event) CloseHandle(g_shutdown_event);
@@ -607,9 +810,17 @@ static int run_daemon(void) {
  * ENTRY POINT
  * ================================================================ */
 
+#ifndef GHB_TEST_BUILD
 int main(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
+    /*
+     * Step 0: Create the dependency injection context.
+     * Wire up the real implementations — this is the composition root.
+     */
+    ghb_context ctx;
+    ctx.logger = &real_logger;
+    ctx.notify = &real_notify;
+    ctx.network = &real_network;
+    ctx.should_stop = check_shutdown_requested;
 
     /*
      * Step 1: Parse command-line arguments.
@@ -617,6 +828,9 @@ int main(int argc, char *argv[]) {
      */
     int want_daemon = 0;
     int want_shutdown = 0;
+    int want_register = 0;
+    int want_unregister = 0;
+    int want_status = 0;
 
     DBG("main: Startup - parsing arguments");
 
@@ -625,6 +839,12 @@ int main(int argc, char *argv[]) {
             want_daemon = 1;
         } else if (strcmp(argv[i], "--shutdown") == 0) {
             want_shutdown = 1;
+        } else if (strcmp(argv[i], "--register") == 0) {
+            want_register = 1;
+        } else if (strcmp(argv[i], "--unregister") == 0) {
+            want_unregister = 1;
+        } else if (strcmp(argv[i], "--status") == 0) {
+            want_status = 1;
         }
     }
 
@@ -633,7 +853,7 @@ int main(int argc, char *argv[]) {
      * Must happen first so that startup errors can fire toasts.
      */
     DBG("main: Initializing COM (notifications)...");
-    if (notify_init() != 0) {
+    if (ctx.notify->notify_init(&ctx) != 0) {
         fprintf(stderr, "Warning: Toast notifications unavailable\n");
     }
 
@@ -642,8 +862,37 @@ int main(int argc, char *argv[]) {
      */
     if (want_shutdown) {
         int result = signal_shutdown();
-        notify_cleanup();
+        ctx.notify->notify_cleanup(&ctx);
         return (result == 0) ? 0 : 1;
+    }
+
+    /*
+     * Step 3b: Handle --register and --unregister for Task Scheduler.
+     * These are one-shot operations that exit immediately.
+     * Spec Section 3: "Windows Task Scheduler. A scheduled task triggers
+     * backup.exe --daemon at system startup."
+     */
+    if (want_register) {
+        int result = register_task_scheduler(&ctx);
+        ctx.notify->notify_cleanup(&ctx);
+        return (result == 0) ? 0 : 1;
+    }
+
+    if (want_unregister) {
+        int result = unregister_task_scheduler(&ctx);
+        ctx.notify->notify_cleanup(&ctx);
+        return (result == 0) ? 0 : 1;
+    }
+
+    if (want_status) {
+        int result = is_task_scheduler_registered(&ctx);
+        if (result == 1) {
+            printf("Task Scheduler: REGISTERED (task: %s)\n", TASK_NAME);
+        } else {
+            printf("Task Scheduler: NOT REGISTERED\n");
+        }
+        ctx.notify->notify_cleanup(&ctx);
+        return 0;
     }
 
     /*
@@ -659,22 +908,22 @@ int main(int argc, char *argv[]) {
          */
         if (instance_result == 1) {
             fprintf(stderr, "Error: Another backup daemon is already running.\n");
-            toast_error("Daemon Error",
+            ctx.notify->toast_error(&ctx, "Daemon Error",
                         "Another backup daemon is already running - exiting");
-            notify_cleanup();
+            ctx.notify->notify_cleanup(&ctx);
             return 1;
         }
         if (instance_result < 0) {
             fprintf(stderr, "Error: Cannot create mutex (daemon startup failed)\n");
-            toast_error("Daemon Error",
+            ctx.notify->toast_error(&ctx, "Daemon Error",
                         "Cannot create mutex - exiting");
-            notify_cleanup();
+            ctx.notify->notify_cleanup(&ctx);
             return 1;
         }
 
         /* Mutex created successfully - we are the daemon. Run the backup loop. */
-        int result = run_daemon();
-        notify_cleanup();
+        int result = run_daemon(&ctx);
+        ctx.notify->notify_cleanup(&ctx);
         return result;
     }
 
@@ -683,8 +932,8 @@ int main(int argc, char *argv[]) {
          * VIEWER MODE (daemon already running):
          * Mutex exists - the daemon is running. Enter viewer mode directly.
          */
-        enter_viewer_mode();
-        notify_cleanup();
+        enter_viewer_mode(&ctx);
+        ctx.notify->notify_cleanup(&ctx);
         return 0;
     }
 
@@ -705,20 +954,21 @@ int main(int argc, char *argv[]) {
 
         if (spawn_daemon() != 0) {
             fprintf(stderr, "Error: Failed to spawn backup daemon.\n");
-            toast_error("Startup Error",
+            ctx.notify->toast_error(&ctx, "Startup Error",
                         "Failed to start backup daemon - check permissions");
-            notify_cleanup();
+            ctx.notify->notify_cleanup(&ctx);
             return 1;
         }
 
         /* Daemon is now running. Enter viewer mode. */
-        enter_viewer_mode();
-        notify_cleanup();
+        enter_viewer_mode(&ctx);
+        ctx.notify->notify_cleanup(&ctx);
         return 0;
     }
 
     /* Mutex check error */
     fprintf(stderr, "Error: Cannot check single instance (mutex creation failed)\n");
-    notify_cleanup();
+    ctx.notify->notify_cleanup(&ctx);
     return 1;
 }
+#endif /* GHB_TEST_BUILD */

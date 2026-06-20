@@ -27,6 +27,7 @@
 #define LOGGER_H
 
 #include "constants.h"
+#include "logger_iface.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -43,7 +44,7 @@
  * ((void)0) - the compiler eliminates all debug output completely.
  * ================================================================ */
 
-#define DBG_ENABLED  /* Single toggle: comment out to disable ALL debug output */
+#define DBG_ENABLED  /* DEV PHASE: enabled until spec is 100% covered. Comment out for production. */
 
 #ifdef DBG_ENABLED
 
@@ -81,26 +82,15 @@ void log_debug(const char *fmt, ...);
 
 
 /**
- * Log entry severity levels. Used in structured log entries to indicate
- * the nature of the event being recorded.
- */
-typedef enum {
-    LOG_INFO,    /* Informational event - cycle start, cycle complete */
-    LOG_SUCCESS, /* Successful operation - repo backed up */
-    LOG_WARNING, /* Non-fatal issue - repo 404, connectivity check failed */
-    LOG_ERROR    /* Fatal or blocking error - corrupt .env, disk full */
-} log_level;
-
-
-/**
  * Initialize the logging subsystem. Opens the log file at the specified
  * path in append mode. If the file cannot be opened, logs to stderr
  * (which is invisible in background mode but prevents silent failure).
  *
+ * @param ctx       Dependency injection context
  * @param log_path  Full path to the log file (e.g., "D:\\BACKUP\\backup.log")
  * @return 0 on success, -1 if the file could not be opened
  */
-int log_init(const char *log_path);
+int log_init(ghb_context *ctx, const char *log_path);
 
 
 /**
@@ -114,7 +104,7 @@ int log_init(const char *log_path);
  * @param status   Status string (e.g., "OK", "FAILED", "SKIPPED")
  * @param detail   Additional detail or error message, or NULL if none
  */
-void log_event(log_level level, const char *action, const char *repo,
+void log_event(ghb_context *ctx, log_level level, const char *action, const char *repo,
                const char *status, const char *detail);
 
 
@@ -126,7 +116,7 @@ void log_event(log_level level, const char *action, const char *repo,
  * @param repo    Repository name, or NULL
  * @param detail  Error description
  */
-void log_error(const char *action, const char *repo, const char *detail);
+void log_error(ghb_context *ctx, const char *action, const char *repo, const char *detail);
 
 
 /**
@@ -137,30 +127,14 @@ void log_error(const char *action, const char *repo, const char *detail);
  * @param max_size_bytes  Rotation threshold in bytes. If 0, rotation
  *                        is disabled and this function does nothing.
  */
-void rotate_log(long max_size_bytes);
+void rotate_log(ghb_context *ctx, long max_size_bytes);
 
 
 /**
  * Flush and close the log file handle. Called on graceful shutdown.
  */
-void log_close(void);
+void log_close(ghb_context *ctx);
 
-
-/**
- * Enable or disable console output. When enabled, log_event prints
- * to the console with ANSI colors in addition to writing to the file.
- * When disabled (background mode), only file output is active.
- *
- * @param enabled  1 to enable console output, 0 to disable
- */
-void log_set_console_output(int enabled);
-
-/**
- * Returns whether console output is currently enabled.
- *
- * @return 1 if console output is active, 0 if not
- */
-int log_get_console_output(void);
 
 
 #endif /* LOGGER_H */
